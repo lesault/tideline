@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,7 +51,7 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher) *Server {
 }
 
 func parseTemplates() map[string]*template.Template {
-	pages := []string{"login", "register", "inbox", "flotsam"}
+	pages := []string{"login", "register", "inbox", "flotsam", "triage", "board"}
 	m := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+p+".html"))
@@ -82,6 +83,12 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/inbox", s.inboxPage)
 		r.Get("/flotsam", s.flotsamPage)
 		r.Post("/links", s.captureForm)
+		r.Get("/triage", s.triagePage)
+		r.Post("/triage/{id}", s.triageSubmit)
+		r.Post("/links/{id}/drop", s.dropLink)
+		r.Get("/board", s.boardPage)
+		r.Post("/cards/{id}/move", s.moveCard)
+		r.Post("/categories", s.addCategory)
 	})
 
 	// Authenticated JSON API (401 when signed out).
@@ -327,8 +334,9 @@ func (s *Server) inboxAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// viewLink is the inbox/flotsam presentation model.
+// viewLink is the inbox/flotsam/triage presentation model.
 type viewLink struct {
+	ID                          int64
 	URL, Title, Excerpt, Domain string
 	Level                       string
 	LevelLabel                  string
@@ -341,11 +349,142 @@ func (s *Server) viewLinks(links []store.Link) []viewLink {
 	for i, l := range links {
 		lvl := decay.Assess(l.CreatedAt, l.TTLExpiresAt, now)
 		out[i] = viewLink{
-			URL: l.URL, Title: l.Title, Excerpt: l.Excerpt, Domain: l.Domain,
+			ID: l.ID, URL: l.URL, Title: l.Title, Excerpt: l.Excerpt, Domain: l.Domain,
 			Level: lvl.String(), LevelLabel: levelLabel(lvl), TimeLeft: timeLeft(l.TTLExpiresAt, now),
 		}
 	}
 	return out
+}
+
+// --- triage & board (M2) ---
+
+func (s *Server) triagePage(w http.ResponseWriter, r *http.Request) {
+	uid := userID(r.Context())
+	links, err := s.store.ListInbox(r.Context(), uid)
+	if err != nil {
+		http.Error(w, "could not load inbox", http.StatusInternalServerError)
+		return
+	}
+	cats, _ := s.store.ListCategories(r.Context(), uid)
+	data := map[string]any{"Categories": cats, "Remaining": len(links)}
+	if len(links) > 0 {
+		data["Card"] = s.viewLinks(links[:1])[0] // most urgent
+	}
+	s.renderPage(w, r, "triage", data)
+}
+
+func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	var catID *int64
+	if v := strings.TrimSpace(r.FormValue("category_id")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			catID = &n
+		}
+	}
+	err = s.store.TriageLink(r.Context(), userID(r.Context()), id, catID, r.FormValue("next_step"))
+	if err == store.ErrNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "could not triage", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/triage", http.StatusSeeOther) // straight to the next card
+}
+
+func (s *Server) dropLink(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DropLink(r.Context(), userID(r.Context()), id); err != nil && err != store.ErrNotFound {
+		http.Error(w, "could not drop", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, backTo(r, "/inbox"), http.StatusSeeOther)
+}
+
+func (s *Server) boardPage(w http.ResponseWriter, r *http.Request) {
+	uid := userID(r.Context())
+	cards, err := s.store.ListBoard(r.Context(), uid)
+	if err != nil {
+		http.Error(w, "could not load board", http.StatusInternalServerError)
+		return
+	}
+	cats, _ := s.store.ListCategories(r.Context(), uid)
+	catName := map[int64]string{}
+	for _, c := range cats {
+		catName[c.ID] = c.Name
+	}
+	columns := make([]boardColumn, len(store.BoardColumns))
+	index := map[string]int{}
+	for i, name := range store.BoardColumns {
+		columns[i] = boardColumn{Name: name}
+		index[name] = i
+	}
+	for _, l := range cards {
+		card := boardCard{ID: l.ID, URL: l.URL, Title: l.Title, Domain: l.Domain, NextStep: l.NextStep}
+		if l.CategoryID != nil {
+			card.Category = catName[*l.CategoryID]
+		}
+		if i, ok := index[l.BoardColumn]; ok {
+			columns[i].Cards = append(columns[i].Cards, card)
+		} else {
+			columns[index[store.ColReviewing]].Cards = append(columns[index[store.ColReviewing]].Cards, card)
+		}
+	}
+	s.renderPage(w, r, "board", map[string]any{"Columns": columns})
+}
+
+func (s *Server) moveCard(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	column := r.FormValue("column")
+	if !store.ValidColumn(column) {
+		http.Error(w, "invalid column", http.StatusBadRequest)
+		return
+	}
+	pos, _ := strconv.Atoi(r.FormValue("position"))
+	if err := s.store.MoveCard(r.Context(), userID(r.Context()), id, column, pos); err != nil {
+		if err == store.ErrNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "could not move", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) addCategory(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name != "" {
+		// A duplicate is harmless here — the user just re-added an existing label.
+		if _, err := s.store.CreateCategory(r.Context(), userID(r.Context()), name); err != nil && err != store.ErrDuplicate {
+			http.Error(w, "could not add category", http.StatusInternalServerError)
+			return
+		}
+	}
+	http.Redirect(w, r, backTo(r, "/triage"), http.StatusSeeOther)
+}
+
+type boardColumn struct {
+	Name  string
+	Cards []boardCard
+}
+
+type boardCard struct {
+	ID                                     int64
+	URL, Title, Domain, NextStep, Category string
 }
 
 func levelLabel(l decay.Level) string {
@@ -419,6 +558,20 @@ func toAPILink(l store.Link) apiLink {
 		ID: l.ID, URL: l.URL, Title: l.Title, Excerpt: l.Excerpt, Domain: l.Domain,
 		Status: l.Status, FetchStatus: l.FetchStatus, ExpiresAt: l.TTLExpiresAt.Format(time.RFC3339),
 	}
+}
+
+func pathID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+}
+
+// backTo returns the Referer for same-page redirects, falling back to def.
+func backTo(r *http.Request, def string) string {
+	if ref := r.Header.Get("Referer"); ref != "" {
+		if u, err := url.Parse(ref); err == nil && u.Path != "" {
+			return u.Path
+		}
+	}
+	return def
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

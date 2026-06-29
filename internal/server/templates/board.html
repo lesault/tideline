@@ -1,0 +1,27 @@
+{{define "title"}}Board · Tideline{{end}}
+{{define "content"}}
+<section class="board">
+  <h1>Board</h1>
+  <p class="hint">Drag cards between columns, or use the ◀ ▶ buttons.</p>
+  <div class="columns">
+    {{range .Columns}}
+      <div class="column" data-column="{{.Name}}">
+        <h2>{{.Name}} <span class="count">{{len .Cards}}</span></h2>
+        <ul class="cards" data-column="{{.Name}}">
+          {{range .Cards}}
+            <li class="card" draggable="true" data-id="{{.ID}}">
+              <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+              <div class="card-meta">
+                {{if .Category}}<span class="tag">{{.Category}}</span>{{end}}
+                {{if .NextStep}}<span class="step-tag">{{.NextStep}}</span>{{end}}
+                <span class="domain">{{.Domain}}</span>
+              </div>
+            </li>
+          {{end}}
+        </ul>
+      </div>
+    {{end}}
+  </div>
+</section>
+<script src="/static/board.js" defer></script>
+{{end}}

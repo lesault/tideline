@@ -1,0 +1,49 @@
+{{define "title"}}Triage · Tideline{{end}}
+{{define "content"}}
+<section class="triage">
+  <div class="triage-head">
+    <h1>Triage</h1>
+    <span class="count">{{.Remaining}} in inbox</span>
+  </div>
+
+  {{if .Card}}
+  <article class="triage-card urgency-{{.Card.Level}}">
+    <div class="meta">
+      <span class="badge {{.Card.Level}}">{{.Card.LevelLabel}}</span>
+      <span class="left">{{.Card.TimeLeft}}</span>
+    </div>
+    <a class="title" href="{{.Card.URL}}" target="_blank" rel="noopener">
+      {{if .Card.Title}}{{.Card.Title}}{{else}}{{.Card.URL}}{{end}}
+    </a>
+    {{if .Card.Excerpt}}<p class="excerpt">{{.Card.Excerpt}}</p>{{end}}
+    <span class="domain">{{.Card.Domain}}</span>
+
+    <form method="post" action="/triage/{{.Card.ID}}" class="triage-form">
+      <fieldset class="cats">
+        <legend>Category</legend>
+        {{range .Categories}}
+          <label class="chip"><input type="radio" name="category_id" value="{{.ID}}"> {{.Name}}</label>
+        {{end}}
+      </fieldset>
+      <fieldset class="steps">
+        <legend>Next step</legend>
+        <button name="next_step" value="read" class="step" accesskey="r">Read now <kbd>r</kbd></button>
+        <button name="next_step" value="schedule" class="step" accesskey="s">Schedule <kbd>s</kbd></button>
+        <button name="next_step" value="reference" class="step" accesskey="f">Reference <kbd>f</kbd></button>
+      </fieldset>
+    </form>
+    <form method="post" action="/links/{{.Card.ID}}/drop" class="drop-form">
+      <button class="drop" accesskey="d">Drop <kbd>d</kbd></button>
+    </form>
+
+    <form method="post" action="/categories" class="add-cat">
+      <input type="text" name="name" placeholder="New category…" maxlength="40">
+      <button>Add</button>
+    </form>
+  </article>
+  {{else}}
+  <p class="empty">🎉 Inbox zero. Nothing to triage — the tide is calm.</p>
+  <p><a href="/board">Go to your board →</a></p>
+  {{end}}
+</section>
+{{end}}

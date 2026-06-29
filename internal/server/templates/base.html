@@ -13,6 +13,8 @@
     {{if .UserEmail}}
       <nav>
         <a href="/inbox">Inbox</a>
+        <a href="/triage">Triage</a>
+        <a href="/board">Board</a>
         <a href="/flotsam">Flotsam</a>
         <span class="who">{{.UserEmail}}</span>
         <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>

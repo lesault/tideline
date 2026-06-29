@@ -7,6 +7,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,120 @@ func TestLoginRejectsWrongPassword(t *testing.T) {
 		t.Fatal("login with wrong password should not redirect to a session")
 	}
 }
+
+func (e *testEnv) captureID(t *testing.T, link string) int64 {
+	t.Helper()
+	resp := e.captureJSON(t, link)
+	defer resp.Body.Close()
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode capture: %v", err)
+	}
+	return out.ID
+}
+
+func TestTriageMovesCardToBoard(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "tri@example.com", "password1")
+	id := e.captureID(t, "https://example.com/read-me")
+	cats, _ := e.st.ListCategories(context.Background(), 1)
+
+	resp, err := e.client.PostForm(e.srv.URL+"/triage/1",
+		url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"read"}})
+	if err != nil {
+		t.Fatalf("triage post: %v", err)
+	}
+	resp.Body.Close()
+
+	board, _ := e.st.ListBoard(context.Background(), 1)
+	if len(board) != 1 || board[0].ID != id {
+		t.Fatalf("expected 1 card on board, got %v", board)
+	}
+	if board[0].Status != store.StatusTriaged || board[0].BoardColumn != store.ColReviewing {
+		t.Fatalf("card not triaged into Reviewing: %+v", board[0])
+	}
+}
+
+func TestDropFromInbox(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "drop@example.com", "password1")
+	e.captureID(t, "https://example.com/junk")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/drop", url.Values{})
+	if err != nil {
+		t.Fatalf("drop post: %v", err)
+	}
+	resp.Body.Close()
+
+	if urls := e.inboxURLs(t); len(urls) != 0 {
+		t.Fatalf("dropped link should leave the inbox, got %v", urls)
+	}
+}
+
+func TestMoveCardEndpoint(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "mv@example.com", "password1")
+	e.captureID(t, "https://example.com/x")
+	cats, _ := e.st.ListCategories(context.Background(), 1)
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"read"}})
+
+	resp, err := e.client.PostForm(e.srv.URL+"/cards/1/move", url.Values{"column": {store.ColNext}, "position": {"0"}})
+	if err != nil {
+		t.Fatalf("move post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("move status = %d, want 204", resp.StatusCode)
+	}
+
+	board, _ := e.st.ListBoard(context.Background(), 1)
+	if len(board) != 1 || board[0].BoardColumn != store.ColNext {
+		t.Fatalf("card not moved to Next: %v", board)
+	}
+}
+
+func TestMoveCardRejectsBadColumn(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "badcol@example.com", "password1")
+	e.captureID(t, "https://example.com/x")
+	cats, _ := e.st.ListCategories(context.Background(), 1)
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"read"}})
+
+	resp, err := e.client.PostForm(e.srv.URL+"/cards/1/move", url.Values{"column": {"Bogus"}, "position": {"0"}})
+	if err != nil {
+		t.Fatalf("move post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad column status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAddCategory(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "cat@example.com", "password1")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/categories", url.Values{"name": {"Cooking"}})
+	if err != nil {
+		t.Fatalf("category post: %v", err)
+	}
+	resp.Body.Close()
+
+	cats, _ := e.st.ListCategories(context.Background(), 1)
+	found := false
+	for _, c := range cats {
+		if c.Name == "Cooking" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("new category not created; got %v", cats)
+	}
+}
+
+func fmtInt(i int64) string { return strconv.FormatInt(i, 10) }
 
 func TestAsyncEnrichmentFillsTitle(t *testing.T) {
 	e := newTestEnv(t)
