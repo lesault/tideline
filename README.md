@@ -83,7 +83,9 @@ go test ./...
 - **M3** — push-to-Wallabag (self-hosted *and* hosted `app.wallabag.it`) ✅
 - **M4** — scoped API tokens, an RSS feed of due items, and a browser extension
   with a toolbar badge count ✅ (extension in [`extension/`](extension/))
-- **M5** — multi-arch image publishing and a tagged release
+- **M5** — CI (tests + multi-arch build verification) and a tagged release ✅
+  _(images are built in CI but not published yet — build your own with
+  `docker compose up --build`)_
 
 ## License
 
