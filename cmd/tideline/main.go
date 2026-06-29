@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ func main() {
 	fetcher := fetch.New(cfg.fetchTimeout)
 	wb := wallabag.New(cfg.fetchTimeout)
 	srv := server.New(st, sessions, fetcher, wb)
+	srv.SetOpenRegistration(cfg.openRegistration)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -53,20 +55,36 @@ func main() {
 }
 
 type config struct {
-	addr          string
-	dbPath        string
-	sessionTTL    time.Duration
-	fetchTimeout  time.Duration
-	sweepInterval time.Duration
+	addr             string
+	dbPath           string
+	sessionTTL       time.Duration
+	fetchTimeout     time.Duration
+	sweepInterval    time.Duration
+	openRegistration bool
 }
 
 func loadConfig() config {
 	return config{
-		addr:          env("TIDELINE_ADDR", ":8080"),
-		dbPath:        env("TIDELINE_DB", "tideline.db"),
-		sessionTTL:    envDuration("TIDELINE_SESSION_TTL", 30*24*time.Hour),
-		fetchTimeout:  envDuration("TIDELINE_FETCH_TIMEOUT", 15*time.Second),
-		sweepInterval: envDuration("TIDELINE_SWEEP_INTERVAL", time.Hour),
+		addr:             env("TIDELINE_ADDR", ":8080"),
+		dbPath:           env("TIDELINE_DB", "tideline.db"),
+		sessionTTL:       envDuration("TIDELINE_SESSION_TTL", 30*24*time.Hour),
+		fetchTimeout:     envDuration("TIDELINE_FETCH_TIMEOUT", 15*time.Second),
+		sweepInterval:    envDuration("TIDELINE_SWEEP_INTERVAL", time.Hour),
+		openRegistration: envBool("TIDELINE_OPEN_REGISTRATION", true),
+	}
+}
+
+func envBool(key string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "":
+		return def
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		log.Printf("warning: invalid %s, using default %v", key, def)
+		return def
 	}
 }
 

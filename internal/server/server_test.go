@@ -26,6 +26,7 @@ type testEnv struct {
 	upstream *httptest.Server
 	client   *http.Client
 	st       *store.Store
+	app      *Server
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -50,7 +51,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Cleanup(srv.Close)
 
 	jar, _ := cookiejar.New(nil)
-	return &testEnv{srv: srv, upstream: upstream, client: &http.Client{Jar: jar}, st: st}
+	return &testEnv{srv: srv, upstream: upstream, client: &http.Client{Jar: jar}, st: st, app: s}
 }
 
 func (e *testEnv) register(t *testing.T, email, pw string) {
@@ -155,6 +156,47 @@ func TestCaptureIsScopedPerUser(t *testing.T) {
 	mallory.register(t, "mallory@example.com", "password1")
 	if urls := mallory.inboxURLs(t); len(urls) != 0 {
 		t.Fatalf("mallory should see no links, got %v", urls)
+	}
+}
+
+func TestLoginIsRateLimited(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "rl@example.com", "password1")
+	e.app.loginLimiter = newRateLimiter(2, time.Minute) // tighten for the test
+
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar}
+	var last int
+	for i := 0; i < 3; i++ {
+		resp, err := c.PostForm(e.srv.URL+"/login", url.Values{"email": {"rl@example.com"}, "password": {"wrong"}})
+		if err != nil {
+			t.Fatalf("login %d: %v", i, err)
+		}
+		last = resp.StatusCode
+		resp.Body.Close()
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("3rd login over the limit = %d, want 429", last)
+	}
+}
+
+func TestRegistrationCanBeClosed(t *testing.T) {
+	e := newTestEnv(t)
+	e.app.openRegistration = false
+
+	// POST is refused.
+	resp, err := e.client.PostForm(e.srv.URL+"/register", url.Values{"email": {"x@example.com"}, "password": {"password1"}})
+	if err != nil {
+		t.Fatalf("register post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("register POST when closed = %d, want 403", resp.StatusCode)
+	}
+	// The page shows a "closed" message rather than the form.
+	body := e.get(t, "/register")
+	if !strings.Contains(body, "Registration closed") {
+		t.Fatalf("register page when closed should say it's closed:\n%s", body)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -33,26 +34,35 @@ const sessionCookie = "tideline_session"
 
 // Server holds dependencies for the HTTP handlers.
 type Server struct {
-	store    *store.Store
-	sessions *auth.SessionManager
-	fetcher  *fetch.Fetcher
-	wallabag *wallabag.Client
-	tmpl     map[string]*template.Template
-	now      func() time.Time
+	store            *store.Store
+	sessions         *auth.SessionManager
+	fetcher          *fetch.Fetcher
+	wallabag         *wallabag.Client
+	tmpl             map[string]*template.Template
+	now              func() time.Time
+	loginLimiter     *rateLimiter
+	registerLimiter  *rateLimiter
+	openRegistration bool
 }
 
 // New constructs a Server. The metadata fetcher and Wallabag client may be nil
 // in tests that don't exercise enrichment or archiving.
 func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallabag.Client) *Server {
 	return &Server{
-		store:    st,
-		sessions: sm,
-		fetcher:  f,
-		wallabag: wb,
-		tmpl:     parseTemplates(),
-		now:      func() time.Time { return time.Now().UTC() },
+		store:            st,
+		sessions:         sm,
+		fetcher:          f,
+		wallabag:         wb,
+		tmpl:             parseTemplates(),
+		now:              func() time.Time { return time.Now().UTC() },
+		loginLimiter:     newRateLimiter(20, time.Minute), // per-IP login attempts
+		registerLimiter:  newRateLimiter(10, time.Hour),   // per-IP new accounts
+		openRegistration: true,
 	}
 }
+
+// SetOpenRegistration enables/disables self-service account creation.
+func (s *Server) SetOpenRegistration(v bool) { s.openRegistration = v }
 
 func parseTemplates() map[string]*template.Template {
 	pages := []string{"login", "register", "inbox", "flotsam", "triage_focus", "board", "reef", "settings", "message"}
@@ -240,6 +250,14 @@ func scope(ctx context.Context) string { v, _ := ctx.Value(ctxScope).(string); r
 // --- auth handlers ---
 
 func (s *Server) registerSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.openRegistration {
+		http.Error(w, "registration is closed", http.StatusForbidden)
+		return
+	}
+	if !s.registerLimiter.allow(clientIP(r)) {
+		http.Error(w, "too many attempts — try again later", http.StatusTooManyRequests)
+		return
+	}
 	em := strings.TrimSpace(r.FormValue("email"))
 	pw := r.FormValue("password")
 	if em == "" || len(pw) < 8 {
@@ -261,6 +279,10 @@ func (s *Server) registerSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.loginLimiter.allow(clientIP(r)) {
+		http.Error(w, "too many attempts — try again later", http.StatusTooManyRequests)
+		return
+	}
 	em := strings.TrimSpace(r.FormValue("email"))
 	pw := r.FormValue("password")
 	u, err := s.store.UserByEmail(r.Context(), em)
@@ -1174,6 +1196,14 @@ func (s *Server) page(name string) http.HandlerFunc {
 			http.Redirect(w, r, "/inbox", http.StatusSeeOther)
 			return
 		}
+		if name == "register" && !s.openRegistration {
+			s.renderPage(w, r, "message", map[string]any{
+				"Title": "Registration closed",
+				"Body":  "This Tideline instance isn't accepting new accounts. Ask the owner for an invite.",
+				"Back":  "/login",
+			})
+			return
+		}
 		s.renderPage(w, r, name, map[string]any{})
 	}
 }
@@ -1189,6 +1219,9 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string,
 	}
 	if _, hasTheme := data["Theme"]; !hasTheme {
 		data["Theme"] = s.userTheme(r.Context())
+	}
+	if _, hasReg := data["OpenRegistration"]; !hasReg {
+		data["OpenRegistration"] = s.openRegistration
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, "base", data); err != nil {
@@ -1246,6 +1279,15 @@ func externalBase(r *http.Request) string {
 }
 
 // backTo returns the Referer for same-page redirects, falling back to def.
+// clientIP is the connecting peer's address, used as the rate-limit key. Behind
+// a reverse proxy this is the proxy; trusted-header parsing can be added later.
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func backTo(r *http.Request, def string) string {
 	if ref := r.Header.Get("Referer"); ref != "" {
 		if u, err := url.Parse(ref); err == nil && u.Path != "" {
