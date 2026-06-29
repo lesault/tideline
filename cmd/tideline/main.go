@@ -33,6 +33,7 @@ func main() {
 	wb := wallabag.New(cfg.fetchTimeout)
 	srv := server.New(st, sessions, fetcher, wb)
 	srv.SetOpenRegistration(cfg.openRegistration)
+	srv.SetForceSecureCookies(cfg.secureCookies)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -61,6 +62,7 @@ type config struct {
 	fetchTimeout     time.Duration
 	sweepInterval    time.Duration
 	openRegistration bool
+	secureCookies    bool
 }
 
 func loadConfig() config {
@@ -71,6 +73,7 @@ func loadConfig() config {
 		fetchTimeout:     envDuration("TIDELINE_FETCH_TIMEOUT", 15*time.Second),
 		sweepInterval:    envDuration("TIDELINE_SWEEP_INTERVAL", time.Hour),
 		openRegistration: envBool("TIDELINE_OPEN_REGISTRATION", true),
+		secureCookies:    envBool("TIDELINE_SECURE_COOKIES", false),
 	}
 }
 

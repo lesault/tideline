@@ -159,6 +159,34 @@ func TestCaptureIsScopedPerUser(t *testing.T) {
 	}
 }
 
+func TestSessionCookieSecureFlag(t *testing.T) {
+	e := newTestEnv(t)
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	// Default over plain HTTP: no Secure flag (so it works on a LAN).
+	resp, err := noFollow.PostForm(e.srv.URL+"/register", url.Values{"email": {"a@example.com"}, "password": {"password1"}})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	resp.Body.Close()
+	if c := resp.Header.Get("Set-Cookie"); !strings.Contains(c, "tideline_session=") || strings.Contains(c, "Secure") {
+		t.Fatalf("plain-HTTP cookie should not be Secure: %q", c)
+	}
+
+	// X-Forwarded-Proto: https (TLS-terminating proxy) → Secure.
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/login", strings.NewReader(url.Values{"email": {"a@example.com"}, "password": {"password1"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp2, err := noFollow.Do(req)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	resp2.Body.Close()
+	if c := resp2.Header.Get("Set-Cookie"); !strings.Contains(c, "Secure") {
+		t.Fatalf("HTTPS (via X-Forwarded-Proto) cookie should be Secure: %q", c)
+	}
+}
+
 func TestEnrichmentIsBounded(t *testing.T) {
 	e := newTestEnv(t)
 	e.app.enrichSem = make(chan struct{}, 1) // capacity 1 for the test

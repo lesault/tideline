@@ -34,16 +34,17 @@ const sessionCookie = "tideline_session"
 
 // Server holds dependencies for the HTTP handlers.
 type Server struct {
-	store            *store.Store
-	sessions         *auth.SessionManager
-	fetcher          *fetch.Fetcher
-	wallabag         *wallabag.Client
-	tmpl             map[string]*template.Template
-	now              func() time.Time
-	loginLimiter     *rateLimiter
-	registerLimiter  *rateLimiter
-	openRegistration bool
-	enrichSem        chan struct{} // bounds concurrent metadata fetches
+	store              *store.Store
+	sessions           *auth.SessionManager
+	fetcher            *fetch.Fetcher
+	wallabag           *wallabag.Client
+	tmpl               map[string]*template.Template
+	now                func() time.Time
+	loginLimiter       *rateLimiter
+	registerLimiter    *rateLimiter
+	openRegistration   bool
+	forceSecureCookies bool
+	enrichSem          chan struct{} // bounds concurrent metadata fetches
 }
 
 // maxConcurrentEnrich caps how many capture metadata fetches run at once, so a
@@ -88,6 +89,11 @@ func (s *Server) scheduleEnrich(id int64, rawURL, host string) bool {
 
 // SetOpenRegistration enables/disables self-service account creation.
 func (s *Server) SetOpenRegistration(v bool) { s.openRegistration = v }
+
+// SetForceSecureCookies forces the Secure flag on the session cookie even when
+// the request looks like plain HTTP (e.g. behind a proxy that doesn't set
+// X-Forwarded-Proto). Set when the instance is served only over HTTPS.
+func (s *Server) SetForceSecureCookies(v bool) { s.forceSecureCookies = v }
 
 func parseTemplates() map[string]*template.Template {
 	pages := []string{"login", "register", "inbox", "flotsam", "triage_focus", "board", "reef", "settings", "message"}
@@ -299,7 +305,7 @@ func (s *Server) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderPage(w, r, "register", map[string]any{"Error": "That email is already registered."})
 		return
 	}
-	s.startSession(w, u.ID)
+	s.startSession(w, r, u.ID)
 	http.Redirect(w, r, "/inbox", http.StatusSeeOther)
 }
 
@@ -316,7 +322,7 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderPage(w, r, "login", map[string]any{"Error": "Invalid email or password."})
 		return
 	}
-	s.startSession(w, u.ID)
+	s.startSession(w, r, u.ID)
 	http.Redirect(w, r, "/inbox", http.StatusSeeOther)
 }
 
@@ -328,12 +334,19 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-func (s *Server) startSession(w http.ResponseWriter, uid int64) {
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, uid int64) {
 	tok := s.sessions.Create(uid)
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: tok, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secureCookie(r),
 	})
+}
+
+// secureCookie reports whether the session cookie should carry the Secure flag:
+// when the request arrived over TLS (directly or via a TLS-terminating proxy
+// setting X-Forwarded-Proto), or when forced on by config.
+func (s *Server) secureCookie(r *http.Request) bool {
+	return s.forceSecureCookies || r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 // --- capture ---
