@@ -129,10 +129,14 @@ func TestCreateUserSeedsDefaultCategories(t *testing.T) {
 	for _, c := range cats {
 		got[c.Name] = true
 	}
-	for _, want := range []string{"Tech", "Read", "Reference", "Fun"} {
+	for _, want := range []string{"Tech", "Read", "Fun"} {
 		if !got[want] {
 			t.Fatalf("missing seeded category %q; got %v", want, got)
 		}
+	}
+	// "Reference" is now a board column, not a seeded category.
+	if got["Reference"] {
+		t.Fatalf("Reference should not be seeded as a category; got %v", got)
 	}
 }
 
@@ -162,7 +166,7 @@ func TestTriageMovesLinkToBoard(t *testing.T) {
 	cats, _ := s.ListCategories(ctx, u.ID)
 	catID := cats[0].ID
 
-	if err := s.TriageLink(ctx, u.ID, l.ID, &catID, "read"); err != nil {
+	if err := s.TriageLink(ctx, u.ID, l.ID, TriageInput{CategoryID: &catID, NextStep: "read"}); err != nil {
 		t.Fatalf("TriageLink: %v", err)
 	}
 	got, _ := s.LinkByID(ctx, l.ID)
@@ -192,7 +196,7 @@ func TestTriageIsScopedPerUser(t *testing.T) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	l, _ := s.CreateLink(ctx, Link{UserID: owner.ID, URL: "https://x.example", CreatedAt: base, TTLExpiresAt: base.Add(time.Hour)})
 
-	if err := s.TriageLink(ctx, other.ID, l.ID, nil, "read"); !errors.Is(err, ErrNotFound) {
+	if err := s.TriageLink(ctx, other.ID, l.ID, TriageInput{NextStep: "read"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("triaging another user's link should be ErrNotFound, got %v", err)
 	}
 }
@@ -220,8 +224,8 @@ func TestMoveCardAndListBoard(t *testing.T) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	a, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://a.example", CreatedAt: base, TTLExpiresAt: base.Add(time.Hour)})
 	b, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://b.example", CreatedAt: base, TTLExpiresAt: base.Add(time.Hour)})
-	s.TriageLink(ctx, u.ID, a.ID, nil, "read")
-	s.TriageLink(ctx, u.ID, b.ID, nil, "schedule")
+	s.TriageLink(ctx, u.ID, a.ID, TriageInput{NextStep: "read"})
+	s.TriageLink(ctx, u.ID, b.ID, TriageInput{NextStep: "schedule"})
 
 	if err := s.MoveCard(ctx, u.ID, a.ID, ColNext, 0); err != nil {
 		t.Fatalf("MoveCard: %v", err)
@@ -242,6 +246,90 @@ func TestMoveCardAndListBoard(t *testing.T) {
 	// Moving to an unknown column is rejected.
 	if err := s.MoveCard(ctx, u.ID, a.ID, "Nonsense", 0); err == nil {
 		t.Fatal("expected error moving to an invalid column")
+	}
+}
+
+func TestTriageToReferenceColumn(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "ref@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://ref.example", CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
+
+	if err := s.TriageLink(ctx, u.ID, l.ID, TriageInput{Column: ColReference, NextStep: "keep"}); err != nil {
+		t.Fatalf("TriageLink: %v", err)
+	}
+	got, _ := s.LinkByID(ctx, l.ID)
+	if got.Status != StatusTriaged {
+		t.Fatalf("status = %q, want triaged", got.Status)
+	}
+	if got.BoardColumn != ColReference {
+		t.Fatalf("board column = %q, want %q", got.BoardColumn, ColReference)
+	}
+}
+
+func TestTriagePersistsScheduledFor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "sched@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://s.example", CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
+
+	when := time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
+	if err := s.TriageLink(ctx, u.ID, l.ID, TriageInput{NextStep: "read", ScheduledFor: when}); err != nil {
+		t.Fatalf("TriageLink: %v", err)
+	}
+	got, _ := s.LinkByID(ctx, l.ID)
+	if !got.ScheduledFor.Equal(when) {
+		t.Fatalf("scheduled_for = %v, want %v", got.ScheduledFor, when)
+	}
+
+	// A triage with no schedule leaves scheduled_for zero.
+	l2, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://s2.example", CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
+	if err := s.TriageLink(ctx, u.ID, l2.ID, TriageInput{NextStep: "read"}); err != nil {
+		t.Fatalf("TriageLink: %v", err)
+	}
+	got2, _ := s.LinkByID(ctx, l2.ID)
+	if !got2.ScheduledFor.IsZero() {
+		t.Fatalf("scheduled_for = %v, want zero", got2.ScheduledFor)
+	}
+}
+
+func TestScheduledDueReturnsOnlyDueLinks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "due@example.com", "h")
+	other, _ := s.CreateUser(ctx, "other@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC)
+
+	mk := func(owner int64, url string) int64 {
+		l, _ := s.CreateLink(ctx, Link{UserID: owner, URL: url, CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
+		return l.ID
+	}
+
+	// Due: scheduled before now.
+	dueID := mk(u.ID, "https://due.example")
+	s.TriageLink(ctx, u.ID, dueID, TriageInput{NextStep: "read", ScheduledFor: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)})
+	// Future: scheduled after now -> not due.
+	futID := mk(u.ID, "https://future.example")
+	s.TriageLink(ctx, u.ID, futID, TriageInput{NextStep: "read", ScheduledFor: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)})
+	// Unscheduled: no schedule -> not due.
+	unschedID := mk(u.ID, "https://unsched.example")
+	s.TriageLink(ctx, u.ID, unschedID, TriageInput{NextStep: "read"})
+	// Other user's due link -> not visible.
+	otherID := mk(other.ID, "https://otherdue.example")
+	s.TriageLink(ctx, other.ID, otherID, TriageInput{NextStep: "read", ScheduledFor: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)})
+
+	got, err := s.ScheduledDue(ctx, u.ID, now)
+	if err != nil {
+		t.Fatalf("ScheduledDue: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 due link, got %d: %+v", len(got), got)
+	}
+	if got[0].ID != dueID {
+		t.Fatalf("due link = %d, want %d", got[0].ID, dueID)
 	}
 }
 
@@ -340,7 +428,7 @@ func TestArchiveLinkRecordsWallabagEntry(t *testing.T) {
 	u, _ := s.CreateUser(ctx, "arch@example.com", "h")
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://x.example", CreatedAt: base, TTLExpiresAt: base.Add(time.Hour)})
-	s.TriageLink(ctx, u.ID, l.ID, nil, "read")
+	s.TriageLink(ctx, u.ID, l.ID, TriageInput{NextStep: "read"})
 
 	if err := s.ArchiveLink(ctx, u.ID, l.ID, 4242); err != nil {
 		t.Fatalf("ArchiveLink: %v", err)

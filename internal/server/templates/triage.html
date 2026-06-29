@@ -4,47 +4,42 @@
   <div class="triage-head">
     <h1>Triage</h1>
     <span class="count">{{.Remaining}} in inbox</span>
+    <a class="focus-link" href="/triage/focus">Focus mode →</a>
   </div>
 
-  {{if .Card}}
-  <article class="triage-card urgency-{{.Card.Level}}">
-    <div class="meta">
-      <span class="badge {{.Card.Level}}">{{.Card.LevelLabel}}</span>
-      <span class="left">{{.Card.TimeLeft}}</span>
-    </div>
-    <a class="title" href="{{.Card.URL}}" target="_blank" rel="noopener">
-      {{if .Card.Title}}{{.Card.Title}}{{else}}{{.Card.URL}}{{end}}
-    </a>
-    {{if .Card.Excerpt}}<p class="excerpt">{{.Card.Excerpt}}</p>{{end}}
-    <span class="domain">{{.Card.Domain}}</span>
+  {{if .Links}}
+  <ul class="triage-list">
+    {{range .Links}}
+    <li class="triage-row urgency-{{.Level}}">
+      <div class="meta">
+        <span class="badge {{.Level}}">{{.LevelLabel}}</span>
+        <span class="left">{{.TimeLeft}}</span>
+      </div>
+      <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+      <span class="domain">{{.Domain}}</span>
 
-    <form method="post" action="/triage/{{.Card.ID}}" class="triage-form">
-      <fieldset class="cats">
-        <legend>Category</legend>
-        {{range .Categories}}
-          <label class="chip"><input type="radio" name="category_id" value="{{.ID}}"> {{.Name}}</label>
-        {{end}}
-      </fieldset>
-      <fieldset class="steps">
-        <legend>Park on board</legend>
-        <button name="next_step" value="schedule" class="step" accesskey="s">Schedule <kbd>s</kbd></button>
-        <button name="next_step" value="reference" class="step" accesskey="f">Reference <kbd>f</kbd></button>
-      </fieldset>
-    </form>
-    <div class="terminal-actions">
-      <form method="post" action="/links/{{.Card.ID}}/archive" class="inline">
-        <button class="step read" accesskey="r">Read now → Wallabag <kbd>r</kbd></button>
+      <form method="post" action="/triage/{{.ID}}" class="row-form">
+        <input type="hidden" name="return" value="/triage">
+        <select name="category_id">
+          <option value="">— category —</option>
+          {{range $.Categories}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+        <input type="date" name="scheduled_for">
+        <button name="next_step" value="schedule" class="step">Schedule</button>
+        <button name="next_step" value="reference" class="step">Reference</button>
       </form>
-      <form method="post" action="/links/{{.Card.ID}}/drop" class="inline">
-        <button class="drop" accesskey="d">Drop <kbd>d</kbd></button>
-      </form>
-    </div>
 
-    <form method="post" action="/categories" class="add-cat">
-      <input type="text" name="name" placeholder="New category…" maxlength="40">
-      <button>Add</button>
-    </form>
-  </article>
+      <div class="row-actions">
+        <form method="post" action="/links/{{.ID}}/archive" class="inline">
+          <button class="mini">Read now → Wallabag</button>
+        </form>
+        <form method="post" action="/links/{{.ID}}/drop" class="inline">
+          <button class="mini ghost">Drop</button>
+        </form>
+      </div>
+    </li>
+    {{end}}
+  </ul>
   {{else}}
   <p class="empty">🎉 Inbox zero. Nothing to triage — the tide is calm.</p>
   <p><a href="/board">Go to your board →</a></p>

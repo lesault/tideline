@@ -23,9 +23,16 @@ capture ─▶ inbox ─▶ (triage) ─▶ Kanban ─▶ ┬─ pushed to Walla
 ```
 
 Every captured link gets a time-to-live (14 days by default, per-account
-configurable). As it ages it escalates through **fresh → aging → due soon →
-expired**; the inbox is always sorted most-urgent-first. A background sweep moves
-expired links to the Flotsam, where they're searchable but out of your way.
+configurable in Settings). As it ages it escalates through **fresh → aging → due
+soon → expired**; the inbox is always sorted most-urgent-first. A background
+sweep moves expired links to the Flotsam, where they're searchable but out of
+your way.
+
+**Triage** the inbox as a scannable list or in a one-card-at-a-time **focus
+mode**. Each link gets a category plus a next step: **Schedule** it for a date
+(it resurfaces in the due count and RSS feed when that date arrives),
+file it as **Reference** (a no-deadline column on the board), **Read now** (push
+to Wallabag), or **Drop** it.
 
 ## Quick start (Docker)
 

@@ -55,7 +55,7 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallaba
 }
 
 func parseTemplates() map[string]*template.Template {
-	pages := []string{"login", "register", "inbox", "flotsam", "triage", "board", "settings", "message"}
+	pages := []string{"login", "register", "inbox", "flotsam", "triage", "triage_focus", "board", "settings", "message"}
 	m := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+p+".html"))
@@ -88,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/flotsam", s.flotsamPage)
 		r.Post("/links", s.captureForm)
 		r.Get("/triage", s.triagePage)
+		r.Get("/triage/focus", s.triageFocus)
 		r.Post("/triage/{id}", s.triageSubmit)
 		r.Post("/links/{id}/drop", s.dropLink)
 		r.Get("/board", s.boardPage)
@@ -409,7 +410,25 @@ func (s *Server) viewLinks(links []store.Link) []viewLink {
 
 // --- triage & board (M2) ---
 
+// triagePage renders the list view: every inbox link (urgency-sorted) with
+// inline triage controls and a link to Focus mode.
 func (s *Server) triagePage(w http.ResponseWriter, r *http.Request) {
+	uid := userID(r.Context())
+	links, err := s.store.ListInbox(r.Context(), uid)
+	if err != nil {
+		http.Error(w, "could not load inbox", http.StatusInternalServerError)
+		return
+	}
+	cats, _ := s.store.ListCategories(r.Context(), uid)
+	s.renderPage(w, r, "triage", map[string]any{
+		"Categories": cats,
+		"Remaining":  len(links),
+		"Links":      s.viewLinks(links),
+	})
+}
+
+// triageFocus renders the focus view: just the single most-urgent inbox link.
+func (s *Server) triageFocus(w http.ResponseWriter, r *http.Request) {
 	uid := userID(r.Context())
 	links, err := s.store.ListInbox(r.Context(), uid)
 	if err != nil {
@@ -421,8 +440,10 @@ func (s *Server) triagePage(w http.ResponseWriter, r *http.Request) {
 	if len(links) > 0 {
 		data["Card"] = s.viewLinks(links[:1])[0] // most urgent
 	}
-	s.renderPage(w, r, "triage", data)
+	s.renderPage(w, r, "triage_focus", data)
 }
+
+const scheduleFormat = "2006-01-02"
 
 func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -436,7 +457,29 @@ func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
 			catID = &n
 		}
 	}
-	err = s.store.TriageLink(r.Context(), userID(r.Context()), id, catID, r.FormValue("next_step"))
+	in := store.TriageInput{CategoryID: catID}
+	switch r.FormValue("next_step") {
+	case "schedule":
+		when := s.now().AddDate(0, 0, 3)
+		if v := strings.TrimSpace(r.FormValue("scheduled_for")); v != "" {
+			d, err := time.Parse(scheduleFormat, v)
+			if err != nil {
+				http.Error(w, "invalid scheduled_for date", http.StatusBadRequest)
+				return
+			}
+			when = d
+		}
+		in.NextStep = "schedule"
+		in.Column = store.ColReviewing
+		in.ScheduledFor = when
+	case "reference":
+		in.NextStep = "reference"
+		in.Column = store.ColReference
+	default:
+		http.Error(w, "unknown next step", http.StatusBadRequest)
+		return
+	}
+	err = s.store.TriageLink(r.Context(), userID(r.Context()), id, in)
 	if err == store.ErrNotFound {
 		http.NotFound(w, r)
 		return
@@ -445,7 +488,12 @@ func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not triage", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/triage", http.StatusSeeOther) // straight to the next card
+	// Return the user to whichever triage view they came from.
+	dest := "/triage"
+	if ret := r.FormValue("return"); ret == "/triage" || ret == "/triage/focus" {
+		dest = ret
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 func (s *Server) dropLink(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +531,10 @@ func (s *Server) boardPage(w http.ResponseWriter, r *http.Request) {
 		card := boardCard{ID: l.ID, URL: l.URL, Title: l.Title, Domain: l.Domain, NextStep: l.NextStep}
 		if l.CategoryID != nil {
 			card.Category = catName[*l.CategoryID]
+		}
+		if !l.ScheduledFor.IsZero() {
+			card.Scheduled = l.ScheduledFor.Format(scheduleFormat)
+			card.Overdue = !l.ScheduledFor.After(s.now())
 		}
 		if i, ok := index[l.BoardColumn]; ok {
 			columns[i].Cards = append(columns[i].Cards, card)
@@ -544,6 +596,13 @@ func (s *Server) dueLinks(ctx context.Context, uid int64) ([]store.Link, error) 
 			due = append(due, l)
 		}
 	}
+	// Scheduled triaged links whose date has arrived resurface alongside the
+	// decaying inbox. The two sets are disjoint (inbox vs triaged).
+	scheduled, err := s.store.ScheduledDue(ctx, uid, now)
+	if err != nil {
+		return nil, err
+	}
+	due = append(due, scheduled...)
 	return due, nil
 }
 
@@ -734,6 +793,8 @@ type boardColumn struct {
 type boardCard struct {
 	ID                                     int64
 	URL, Title, Domain, NextStep, Category string
+	Scheduled                              string // formatted scheduled date, "" if none
+	Overdue                                bool   // scheduled date has arrived/passed
 }
 
 func levelLabel(l decay.Level) string {

@@ -57,10 +57,22 @@ ul.links { list-style: none; padding: 0; display: grid; gap: .75rem; }
 .drop { background: transparent; color: var(--muted); border: 1px solid #2d3d4f; }
 .add-cat { margin-top: 1rem; display: flex; gap: .4rem; }
 .add-cat input { flex: 1; padding: .4rem .6rem; border-radius: 6px; border: 1px solid #2d3d4f; background: #0d141d; color: var(--ink); }
+.focus-link { color: var(--accent); text-decoration: none; font-size: .85rem; margin-left: auto; }
+.focus-link:hover { text-decoration: underline; }
+.progress { color: var(--muted); font-size: .85rem; margin: .75rem 0 0; }
+.when { color: var(--muted); font-size: .85rem; display: inline-flex; align-items: center; gap: .35rem; }
+.triage-list { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: .75rem; }
+.triage-row { background: var(--panel); border-radius: 10px; padding: .9rem 1rem; border-left: 4px solid #2d3d4f; }
+.triage-row.urgency-fresh { border-left-color: var(--fresh); }
+.triage-row.urgency-aging { border-left-color: var(--aging); }
+.triage-row.urgency-due_soon { border-left-color: var(--due); }
+.row-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: .6rem; }
+.row-form select, .row-form input[type=date] { padding: .35rem .5rem; border-radius: 6px; border: 1px solid #2d3d4f; background: #0d141d; color: var(--ink); }
+.row-actions { display: flex; gap: .4rem; margin-top: .5rem; }
 
 /* --- board (M2) --- */
 .hint { color: var(--muted); font-size: .85rem; }
-.columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+.columns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
 .column { background: #0d141d; border-radius: 10px; padding: .6rem; min-height: 120px; }
 .column h2 { font-size: .9rem; margin: .2rem .2rem .6rem; display: flex; justify-content: space-between; color: var(--muted); }
 .cards { list-style: none; padding: 0; margin: 0; display: grid; gap: .5rem; min-height: 60px; }
@@ -70,6 +82,8 @@ ul.links { list-style: none; padding: 0; display: grid; gap: .75rem; }
 .card-meta { display: flex; gap: .4rem; align-items: center; margin-top: .35rem; flex-wrap: wrap; }
 .tag { background: #18303a; color: var(--accent); border-radius: 4px; padding: 0 .35rem; font-size: .72rem; }
 .step-tag { color: var(--due); font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; }
+.scheduled { color: var(--muted); font-size: .72rem; }
+.scheduled.overdue { color: var(--expired); font-weight: 700; }
 
 /* --- settings + archive actions (M3) --- */
 .settings-form { max-width: 460px; display: grid; gap: .6rem; }

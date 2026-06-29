@@ -1,0 +1,57 @@
+{{define "title"}}Focus · Tideline{{end}}
+{{define "content"}}
+<section class="triage">
+  <div class="triage-head">
+    <h1>Focus</h1>
+    <span class="count">{{.Remaining}} in inbox</span>
+    <a class="focus-link" href="/triage">← List view</a>
+  </div>
+
+  {{if .Card}}
+  <p class="progress">Card 1 of {{.Remaining}}</p>
+  <article class="triage-card urgency-{{.Card.Level}}">
+    <div class="meta">
+      <span class="badge {{.Card.Level}}">{{.Card.LevelLabel}}</span>
+      <span class="left">{{.Card.TimeLeft}}</span>
+    </div>
+    <a class="title" href="{{.Card.URL}}" target="_blank" rel="noopener">
+      {{if .Card.Title}}{{.Card.Title}}{{else}}{{.Card.URL}}{{end}}
+    </a>
+    {{if .Card.Excerpt}}<p class="excerpt">{{.Card.Excerpt}}</p>{{end}}
+    <span class="domain">{{.Card.Domain}}</span>
+
+    <form method="post" action="/triage/{{.Card.ID}}" class="triage-form">
+      <input type="hidden" name="return" value="/triage/focus">
+      <fieldset class="cats">
+        <legend>Category</legend>
+        {{range .Categories}}
+          <label class="chip"><input type="radio" name="category_id" value="{{.ID}}"> {{.Name}}</label>
+        {{end}}
+      </fieldset>
+      <fieldset class="steps">
+        <legend>Park on board</legend>
+        <label class="when">Schedule for <input type="date" name="scheduled_for"></label>
+        <button name="next_step" value="schedule" class="step" accesskey="s">Schedule <kbd>s</kbd></button>
+        <button name="next_step" value="reference" class="step" accesskey="f">Reference <kbd>f</kbd></button>
+      </fieldset>
+    </form>
+    <div class="terminal-actions">
+      <form method="post" action="/links/{{.Card.ID}}/archive" class="inline">
+        <button class="step read" accesskey="r">Read now → Wallabag <kbd>r</kbd></button>
+      </form>
+      <form method="post" action="/links/{{.Card.ID}}/drop" class="inline">
+        <button class="drop" accesskey="d">Drop <kbd>d</kbd></button>
+      </form>
+    </div>
+
+    <form method="post" action="/categories" class="add-cat">
+      <input type="text" name="name" placeholder="New category…" maxlength="40">
+      <button>Add</button>
+    </form>
+  </article>
+  {{else}}
+  <p class="empty">🎉 Inbox zero. Nothing to triage — the tide is calm.</p>
+  <p><a href="/board">Go to your board →</a></p>
+  {{end}}
+</section>
+{{end}}

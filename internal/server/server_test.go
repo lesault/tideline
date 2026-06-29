@@ -177,7 +177,7 @@ func TestTriageMovesCardToBoard(t *testing.T) {
 	cats, _ := e.st.ListCategories(context.Background(), 1)
 
 	resp, err := e.client.PostForm(e.srv.URL+"/triage/1",
-		url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"read"}})
+		url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"schedule"}, "scheduled_for": {"2099-01-01"}})
 	if err != nil {
 		t.Fatalf("triage post: %v", err)
 	}
@@ -189,6 +189,9 @@ func TestTriageMovesCardToBoard(t *testing.T) {
 	}
 	if board[0].Status != store.StatusTriaged || board[0].BoardColumn != store.ColReviewing {
 		t.Fatalf("card not triaged into Reviewing: %+v", board[0])
+	}
+	if board[0].ScheduledFor.IsZero() {
+		t.Fatalf("scheduling should set ScheduledFor: %+v", board[0])
 	}
 }
 
@@ -213,7 +216,7 @@ func TestMoveCardEndpoint(t *testing.T) {
 	e.register(t, "mv@example.com", "password1")
 	e.captureID(t, "https://example.com/x")
 	cats, _ := e.st.ListCategories(context.Background(), 1)
-	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"read"}})
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"reference"}})
 
 	resp, err := e.client.PostForm(e.srv.URL+"/cards/1/move", url.Values{"column": {store.ColNext}, "position": {"0"}})
 	if err != nil {
@@ -235,7 +238,7 @@ func TestMoveCardRejectsBadColumn(t *testing.T) {
 	e.register(t, "badcol@example.com", "password1")
 	e.captureID(t, "https://example.com/x")
 	cats, _ := e.st.ListCategories(context.Background(), 1)
-	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"read"}})
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"reference"}})
 
 	resp, err := e.client.PostForm(e.srv.URL+"/cards/1/move", url.Values{"column": {"Bogus"}, "position": {"0"}})
 	if err != nil {
@@ -507,6 +510,91 @@ func TestDueFeedRequiresFeedScope(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("capture token on feed should be 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestTriageListShowsMultipleLinks(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "list@example.com", "password1")
+	e.captureID(t, "https://example.com/one")
+	e.captureID(t, "https://example.com/two")
+
+	resp, err := e.client.Get(e.srv.URL + "/triage")
+	if err != nil {
+		t.Fatalf("triage list: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("triage list status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+	if !strings.Contains(html, "https://example.com/one") || !strings.Contains(html, "https://example.com/two") {
+		t.Fatalf("triage list should show all inbox links:\n%s", html)
+	}
+}
+
+func TestTriageFocusShowsOneCard(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "focus@example.com", "password1")
+	e.captureID(t, "https://example.com/one")
+	e.captureID(t, "https://example.com/two")
+
+	resp, err := e.client.Get(e.srv.URL + "/triage/focus")
+	if err != nil {
+		t.Fatalf("triage focus: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("triage focus status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "triage-card") {
+		t.Fatalf("focus view should show a single card:\n%s", body)
+	}
+}
+
+func TestScheduleResurfacesInCount(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "sched@example.com", "password1")
+	e.captureID(t, "https://example.com/later")
+
+	// Schedule with a past date, so it is immediately "due" again.
+	resp, err := e.client.PostForm(e.srv.URL+"/triage/1",
+		url.Values{"next_step": {"schedule"}, "scheduled_for": {"2020-01-01"}})
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	resp.Body.Close()
+
+	cresp, err := e.client.Get(e.srv.URL + "/api/count")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	defer cresp.Body.Close()
+	var out struct {
+		Count int `json:"count"`
+	}
+	json.NewDecoder(cresp.Body).Decode(&out)
+	if out.Count != 1 {
+		t.Fatalf("count = %d, want 1 (past-scheduled link resurfaced)", out.Count)
+	}
+}
+
+func TestReferenceLandsInReferenceColumn(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "ref@example.com", "password1")
+	id := e.captureID(t, "https://example.com/ref")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"reference"}})
+	if err != nil {
+		t.Fatalf("reference: %v", err)
+	}
+	resp.Body.Close()
+
+	board, _ := e.st.ListBoard(context.Background(), 1)
+	if len(board) != 1 || board[0].ID != id || board[0].BoardColumn != store.ColReference {
+		t.Fatalf("reference triage should land in the Reference column: %+v", board)
 	}
 }
 

@@ -43,10 +43,11 @@ const (
 	ColReviewing = "Reviewing"
 	ColNext      = "Next"
 	ColDone      = "Done"
+	ColReference = "Reference"
 )
 
 // BoardColumns lists the valid columns in display order.
-var BoardColumns = []string{ColReviewing, ColNext, ColDone}
+var BoardColumns = []string{ColReviewing, ColNext, ColDone, ColReference}
 
 // ValidColumn reports whether c is a known board column.
 func ValidColumn(c string) bool {
@@ -59,7 +60,7 @@ func ValidColumn(c string) bool {
 }
 
 // defaultCategories are seeded for every new account.
-var defaultCategories = []string{"Tech", "Read", "Reference", "Fun"}
+var defaultCategories = []string{"Tech", "Read", "Fun"}
 
 // timeFormat is the canonical on-disk time encoding: sortable RFC3339 in UTC.
 const timeFormat = time.RFC3339Nano
@@ -131,6 +132,7 @@ type Link struct {
 	CreatedAt       time.Time
 	ReviewedAt      time.Time
 	ArchivedAt      time.Time
+	ScheduledFor    time.Time
 	WallabagEntryID *int64
 	FetchStatus     string
 }
@@ -296,7 +298,7 @@ func (s *Store) ListByStatus(ctx context.Context, userID int64, status string) (
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
-			reviewed_at, archived_at, wallabag_entry_id, fetch_status
+			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links WHERE user_id = ? AND status = ? ORDER BY ttl_expires_at ASC, id ASC`,
 		userID, status)
 	if err != nil {
@@ -341,7 +343,7 @@ func (s *Store) LinkByID(ctx context.Context, id int64) (Link, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
-			reviewed_at, archived_at, wallabag_entry_id, fetch_status
+			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links WHERE id = ?`, id)
 	if err != nil {
 		return Link{}, fmt.Errorf("query link: %w", err)
@@ -392,20 +394,60 @@ func (s *Store) SweepExpired(ctx context.Context, now time.Time) (int, error) {
 	return int(n), nil
 }
 
+// TriageInput captures the decisions made when triaging an inbox link onto the
+// board.
+type TriageInput struct {
+	CategoryID   *int64    // nil clears any category
+	NextStep     string    // free-text next action
+	Column       string    // target board column; empty -> ColReviewing
+	ScheduledFor time.Time // zero -> no schedule (stored as "")
+}
+
 // TriageLink moves an inbox link onto the board: it records the chosen category
-// (nil clears it) and next-step, lands the card in the Reviewing column, and
-// stamps reviewed_at. Scoped to userID — a foreign link yields ErrNotFound.
-// Triaged links leave the inbox, so the decay sweep no longer touches them.
-func (s *Store) TriageLink(ctx context.Context, userID, linkID int64, categoryID *int64, nextStep string) error {
-	pos := s.nextBoardPosition(ctx, userID, ColReviewing)
+// (nil clears it) and next-step, lands the card in the requested column (default
+// Reviewing), optionally schedules it for a future resurfacing, and stamps
+// reviewed_at. Scoped to userID — a foreign link yields ErrNotFound. Triaged
+// links leave the inbox, so the decay sweep no longer touches them.
+func (s *Store) TriageLink(ctx context.Context, userID, linkID int64, in TriageInput) error {
+	col := in.Column
+	if col == "" {
+		col = ColReviewing
+	}
+	if !ValidColumn(col) {
+		return fmt.Errorf("invalid board column %q", col)
+	}
+	scheduled := ""
+	if !in.ScheduledFor.IsZero() {
+		scheduled = in.ScheduledFor.UTC().Format(timeFormat)
+	}
+	pos := s.nextBoardPosition(ctx, userID, col)
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE links SET status = ?, category_id = ?, next_step = ?, board_column = ?, board_position = ?, reviewed_at = ?
+		`UPDATE links SET status = ?, category_id = ?, next_step = ?, board_column = ?, board_position = ?, reviewed_at = ?, scheduled_for = ?
 		 WHERE id = ? AND user_id = ?`,
-		StatusTriaged, categoryID, nextStep, ColReviewing, pos, time.Now().UTC().Format(timeFormat), linkID, userID)
+		StatusTriaged, in.CategoryID, in.NextStep, col, pos, time.Now().UTC().Format(timeFormat), scheduled, linkID, userID)
 	if err != nil {
 		return fmt.Errorf("triage link: %w", err)
 	}
 	return notFoundIfNoRows(res)
+}
+
+// ScheduledDue returns a user's triaged links whose scheduled_for has arrived
+// (non-empty and <= now), soonest-scheduled first. Unscheduled and
+// future-scheduled links are excluded.
+func (s *Store) ScheduledDue(ctx context.Context, userID int64, now time.Time) ([]Link, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
+			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
+			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
+		 FROM links
+		 WHERE user_id = ? AND status = ? AND scheduled_for != '' AND scheduled_for <= ?
+		 ORDER BY scheduled_for ASC, id ASC`,
+		userID, StatusTriaged, now.UTC().Format(timeFormat))
+	if err != nil {
+		return nil, fmt.Errorf("query scheduled due: %w", err)
+	}
+	defer rows.Close()
+	return scanLinks(rows)
 }
 
 // DropLink discards a link (status=dropped). Scoped to userID.
@@ -438,7 +480,7 @@ func (s *Store) ListBoard(ctx context.Context, userID int64) ([]Link, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
-			reviewed_at, archived_at, wallabag_entry_id, fetch_status
+			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links WHERE user_id = ? AND status = ? ORDER BY board_column ASC, board_position ASC, id ASC`,
 		userID, StatusTriaged)
 	if err != nil {
@@ -580,16 +622,17 @@ func scanLinks(rows *sql.Rows) ([]Link, error) {
 	var out []Link
 	for rows.Next() {
 		var l Link
-		var ttl, created, reviewed, archived string
+		var ttl, created, reviewed, archived, scheduled string
 		if err := rows.Scan(&l.ID, &l.UserID, &l.URL, &l.Title, &l.Excerpt, &l.ImageURL,
 			&l.FaviconURL, &l.Domain, &l.Status, &l.CategoryID, &l.NextStep, &l.BoardColumn,
-			&l.BoardPosition, &ttl, &created, &reviewed, &archived, &l.WallabagEntryID, &l.FetchStatus); err != nil {
+			&l.BoardPosition, &ttl, &created, &reviewed, &archived, &scheduled, &l.WallabagEntryID, &l.FetchStatus); err != nil {
 			return nil, fmt.Errorf("scan link: %w", err)
 		}
 		l.TTLExpiresAt = parseTime(ttl)
 		l.CreatedAt = parseTime(created)
 		l.ReviewedAt = parseTime(reviewed)
 		l.ArchivedAt = parseTime(archived)
+		l.ScheduledFor = parseTime(scheduled)
 		out = append(out, l)
 	}
 	return out, rows.Err()
