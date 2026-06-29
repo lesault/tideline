@@ -67,7 +67,19 @@ const timeFormat = time.RFC3339Nano
 
 // Store wraps the database handle.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	secret []byte // AES key for at-rest field encryption; nil = disabled
+}
+
+// SetSecret enables at-rest encryption of sensitive fields (Wallabag
+// credentials) with a key derived from secret. An empty secret leaves
+// encryption disabled (fields stored as plaintext). Set once at startup.
+func (s *Store) SetSecret(secret string) {
+	if secret == "" {
+		s.secret = nil
+		return
+	}
+	s.secret = deriveKey(secret)
 }
 
 // User is an account.
@@ -662,18 +674,43 @@ func hashToken(raw string) string {
 
 // SaveWallabagAccount stores (or replaces) a user's Wallabag credentials.
 func (s *Store) SaveWallabagAccount(ctx context.Context, a WallabagAccount) error {
-	_, err := s.db.ExecContext(ctx,
+	secret, err := s.encField(a.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("encrypt client secret: %w", err)
+	}
+	password, err := s.encField(a.Password)
+	if err != nil {
+		return fmt.Errorf("encrypt password: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO wallabag_accounts (user_id, base_url, client_id, client_secret, username, password)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id) DO UPDATE SET
 		   base_url = excluded.base_url, client_id = excluded.client_id,
 		   client_secret = excluded.client_secret, username = excluded.username,
 		   password = excluded.password`,
-		a.UserID, a.BaseURL, a.ClientID, a.ClientSecret, a.Username, a.Password)
+		a.UserID, a.BaseURL, a.ClientID, secret, a.Username, password)
 	if err != nil {
 		return fmt.Errorf("save wallabag account: %w", err)
 	}
 	return nil
+}
+
+// encField encrypts a sensitive value when a secret is configured; otherwise it
+// returns the plaintext (encryption disabled).
+func (s *Store) encField(v string) (string, error) {
+	if s.secret == nil {
+		return v, nil
+	}
+	return encryptField(s.secret, v)
+}
+
+// decField reverses encField, transparently passing through legacy plaintext.
+func (s *Store) decField(v string) (string, error) {
+	if s.secret == nil {
+		return v, nil
+	}
+	return decryptField(s.secret, v)
 }
 
 // WallabagAccount loads a user's Wallabag credentials, ErrNotFound if unset.
@@ -687,6 +724,12 @@ func (s *Store) WallabagAccount(ctx context.Context, userID int64) (WallabagAcco
 	}
 	if err != nil {
 		return WallabagAccount{}, fmt.Errorf("query wallabag account: %w", err)
+	}
+	if a.ClientSecret, err = s.decField(a.ClientSecret); err != nil {
+		return WallabagAccount{}, fmt.Errorf("decrypt client secret: %w", err)
+	}
+	if a.Password, err = s.decField(a.Password); err != nil {
+		return WallabagAccount{}, fmt.Errorf("decrypt password: %w", err)
 	}
 	return a, nil
 }

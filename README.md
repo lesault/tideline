@@ -68,6 +68,9 @@ All settings are environment variables:
 | `TIDELINE_SESSION_TTL` | `720h` (30 days) | How long a login stays valid |
 | `TIDELINE_FETCH_TIMEOUT` | `15s` | Per-link metadata fetch timeout |
 | `TIDELINE_SWEEP_INTERVAL` | `1h` | How often expired links are swept to the Flotsam |
+| `TIDELINE_SECRET` | _(unset)_ | Encrypts Wallabag credentials at rest. Set a long random value; **keep it stable** or saved credentials become unreadable. Unset = stored unencrypted. |
+| `TIDELINE_OPEN_REGISTRATION` | `true` | Set `false` to disable self-service account creation |
+| `TIDELINE_SECURE_COOKIES` | `false` | Force the `Secure` flag on the session cookie (auto-on when the request is HTTPS / `X-Forwarded-Proto: https`) |
 
 ## Tech
 

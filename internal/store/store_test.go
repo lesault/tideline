@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -637,6 +638,69 @@ func TestWallabagAccountSaveLoadAndUpsert(t *testing.T) {
 	got, _ = s.WallabagAccount(ctx, u.ID)
 	if got.BaseURL != "https://changed.example" {
 		t.Fatalf("upsert did not update base_url: %+v", got)
+	}
+}
+
+func TestWallabagCredsEncryptedAtRest(t *testing.T) {
+	s := newTestStore(t)
+	s.SetSecret("a-strong-instance-secret")
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "enc@example.com", "h")
+
+	in := WallabagAccount{UserID: u.ID, BaseURL: "https://wb.example", ClientID: "cid",
+		ClientSecret: "shhh", Username: "me", Password: "pw"}
+	if err := s.SaveWallabagAccount(ctx, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Raw DB columns must be ciphertext, not the plaintext secrets.
+	var rawPw, rawSecret string
+	s.db.QueryRowContext(ctx, `SELECT password, client_secret FROM wallabag_accounts WHERE user_id=?`, u.ID).Scan(&rawPw, &rawSecret)
+	if rawPw == "pw" || rawSecret == "shhh" {
+		t.Fatalf("secrets stored as plaintext: pw=%q secret=%q", rawPw, rawSecret)
+	}
+	if !strings.HasPrefix(rawPw, encPrefix) || !strings.HasPrefix(rawSecret, encPrefix) {
+		t.Fatalf("expected encrypted columns, got pw=%q secret=%q", rawPw, rawSecret)
+	}
+
+	// Loading decrypts back to the originals.
+	got, _ := s.WallabagAccount(ctx, u.ID)
+	if got.Password != "pw" || got.ClientSecret != "shhh" {
+		t.Fatalf("decrypt round-trip failed: %+v", got)
+	}
+}
+
+func TestWallabagPlaintextWhenNoSecret(t *testing.T) {
+	s := newTestStore(t) // no SetSecret
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "plain@example.com", "h")
+	s.SaveWallabagAccount(ctx, WallabagAccount{UserID: u.ID, BaseURL: "b", ClientID: "c", ClientSecret: "shhh", Username: "u", Password: "pw"})
+
+	var rawPw string
+	s.db.QueryRowContext(ctx, `SELECT password FROM wallabag_accounts WHERE user_id=?`, u.ID).Scan(&rawPw)
+	if rawPw != "pw" {
+		t.Fatalf("without a secret, password should be plaintext, got %q", rawPw)
+	}
+	got, _ := s.WallabagAccount(ctx, u.ID)
+	if got.Password != "pw" {
+		t.Fatalf("load = %q, want pw", got.Password)
+	}
+}
+
+func TestWallabagLegacyPlaintextReadsWithSecret(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "legacy@example.com", "h")
+	// Save while encryption is OFF (simulates a pre-encryption row)...
+	s.SaveWallabagAccount(ctx, WallabagAccount{UserID: u.ID, BaseURL: "b", ClientID: "c", ClientSecret: "shhh", Username: "u", Password: "pw"})
+	// ...then turn encryption on and read: the legacy plaintext must still load.
+	s.SetSecret("now-encrypting")
+	got, err := s.WallabagAccount(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("load legacy: %v", err)
+	}
+	if got.Password != "pw" || got.ClientSecret != "shhh" {
+		t.Fatalf("legacy plaintext didn't load: %+v", got)
 	}
 }
 

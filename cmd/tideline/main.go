@@ -28,6 +28,12 @@ func main() {
 	}
 	defer st.Close()
 
+	if cfg.secret != "" {
+		st.SetSecret(cfg.secret)
+	} else {
+		log.Println("warning: TIDELINE_SECRET not set — Wallabag credentials are stored unencrypted")
+	}
+
 	sessions := auth.NewSessionManager(cfg.sessionTTL)
 	fetcher := fetch.New(cfg.fetchTimeout)
 	wb := wallabag.New(cfg.fetchTimeout)
@@ -63,6 +69,7 @@ type config struct {
 	sweepInterval    time.Duration
 	openRegistration bool
 	secureCookies    bool
+	secret           string
 }
 
 func loadConfig() config {
@@ -74,6 +81,7 @@ func loadConfig() config {
 		sweepInterval:    envDuration("TIDELINE_SWEEP_INTERVAL", time.Hour),
 		openRegistration: envBool("TIDELINE_OPEN_REGISTRATION", true),
 		secureCookies:    envBool("TIDELINE_SECURE_COOKIES", false),
+		secret:           env("TIDELINE_SECRET", ""),
 	}
 }
 
