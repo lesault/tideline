@@ -45,6 +45,8 @@ type Server struct {
 	openRegistration   bool
 	forceSecureCookies bool
 	enrichSem          chan struct{} // bounds concurrent metadata fetches
+	dummyHash          string        // verified on unknown-user login to equalize timing
+	verifyPassword     func(hash, pw string) bool
 }
 
 // maxConcurrentEnrich caps how many capture metadata fetches run at once, so a
@@ -54,6 +56,9 @@ const maxConcurrentEnrich = 8
 // New constructs a Server. The metadata fetcher and Wallabag client may be nil
 // in tests that don't exercise enrichment or archiving.
 func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallabag.Client) *Server {
+	// A real argon2id hash to verify against on unknown-user logins, so the
+	// password check costs the same whether or not the account exists.
+	dummy, _ := auth.HashPassword("tideline-login-timing-equalizer")
 	return &Server{
 		store:            st,
 		sessions:         sm,
@@ -65,6 +70,8 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallaba
 		registerLimiter:  newRateLimiter(10, time.Hour),   // per-IP new accounts
 		openRegistration: true,
 		enrichSem:        make(chan struct{}, maxConcurrentEnrich),
+		dummyHash:        dummy,
+		verifyPassword:   auth.VerifyPassword,
 	}
 }
 
@@ -319,7 +326,14 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	em := strings.TrimSpace(r.FormValue("email"))
 	pw := r.FormValue("password")
 	u, err := s.store.UserByEmail(r.Context(), em)
-	if err != nil || !auth.VerifyPassword(u.PasswordHash, pw) {
+	// Always run the (slow) password check — against a dummy hash when the user
+	// doesn't exist — so response time doesn't reveal whether the email is valid.
+	hash := s.dummyHash
+	if err == nil {
+		hash = u.PasswordHash
+	}
+	valid := s.verifyPassword(hash, pw)
+	if err != nil || !valid {
 		w.WriteHeader(http.StatusUnauthorized)
 		s.renderPage(w, r, "login", map[string]any{"Error": "Invalid email or password."})
 		return

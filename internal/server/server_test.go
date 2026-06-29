@@ -296,6 +296,29 @@ func TestRegistrationCanBeClosed(t *testing.T) {
 	}
 }
 
+func TestLoginVerifiesPasswordEvenForUnknownUser(t *testing.T) {
+	e := newTestEnv(t)
+	if e.app.dummyHash == "" {
+		t.Fatal("expected a dummy hash for timing equalization")
+	}
+	var calls int
+	e.app.verifyPassword = func(hash, pw string) bool { calls++; return auth.VerifyPassword(hash, pw) }
+
+	resp, err := e.client.PostForm(e.srv.URL+"/login", url.Values{"email": {"ghost@example.com"}, "password": {"whatever"}})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown-user login = %d, want 401", resp.StatusCode)
+	}
+	// The password check must still run (against the dummy hash) — otherwise the
+	// fast no-such-user path leaks valid emails by timing.
+	if calls != 1 {
+		t.Fatalf("verifyPassword called %d times for an unknown user, want 1", calls)
+	}
+}
+
 func TestLoginRejectsWrongPassword(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "bob@example.com", "rightpassword")
