@@ -1,0 +1,17 @@
+services:
+  tideline:
+    build: .
+    image: tideline:latest
+    container_name: tideline
+    ports:
+      - "8080:8080"
+    volumes:
+      - tideline-data:/data
+    environment:
+      # Default time-to-live applies per new account; users can change theirs.
+      # See README for the full list of TIDELINE_* settings.
+      TIDELINE_SWEEP_INTERVAL: "1h"
+    restart: unless-stopped
+
+volumes:
+  tideline-data:

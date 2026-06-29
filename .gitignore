@@ -1,0 +1,11 @@
+# Local database files
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+/tideline
+/dist/
+
+# Editor / OS noise
+.DS_Store

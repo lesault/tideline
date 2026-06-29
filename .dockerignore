@@ -1,0 +1,8 @@
+.git
+.gitignore
+*.db
+*.db-*
+docs
+README.md
+LICENSE
+extension

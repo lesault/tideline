@@ -1,0 +1,13 @@
+{{define "title"}}Register · Tideline{{end}}
+{{define "content"}}
+<section class="auth">
+  <h1>Create your account</h1>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form method="post" action="/register">
+    <label>Email <input type="email" name="email" required autofocus></label>
+    <label>Password <input type="password" name="password" required minlength="8"></label>
+    <button type="submit">Register</button>
+  </form>
+  <p>Already have an account? <a href="/login">Log in</a></p>
+</section>
+{{end}}

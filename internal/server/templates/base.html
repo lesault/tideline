@@ -1,0 +1,26 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{block "title" .}}Tideline{{end}}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/inbox">🌊 Tideline</a>
+    {{if .UserEmail}}
+      <nav>
+        <a href="/inbox">Inbox</a>
+        <a href="/graveyard">Graveyard</a>
+        <span class="who">{{.UserEmail}}</span>
+        <form method="post" action="/logout" class="inline"><button class="link">Log out</button></form>
+      </nav>
+    {{end}}
+  </header>
+  <main>
+    {{block "content" .}}{{end}}
+  </main>
+</body>
+</html>{{end}}

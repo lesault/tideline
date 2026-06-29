@@ -1,0 +1,15 @@
+{{define "title"}}Graveyard · Tideline{{end}}
+{{define "content"}}
+<section class="inbox">
+  <h1>Graveyard <span class="count">{{len .Links}}</span></h1>
+  <p class="empty">Links that expired before you acted on them. Kept, not deleted — but out of your way.</p>
+  <ul class="links">
+    {{range .Links}}
+      <li class="link expired">
+        <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+        <span class="domain">{{.Domain}}</span>
+      </li>
+    {{end}}
+  </ul>
+</section>
+{{end}}

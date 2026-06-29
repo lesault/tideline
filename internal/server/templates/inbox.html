@@ -1,0 +1,31 @@
+{{define "title"}}Inbox · Tideline{{end}}
+{{define "content"}}
+<section class="capture">
+  <form method="post" action="/links" class="capture-form">
+    <input type="url" name="url" placeholder="Paste a link to read later…" required autofocus>
+    <button type="submit">Add to inbox</button>
+  </form>
+</section>
+
+<section class="inbox">
+  <h1>Inbox <span class="count">{{len .Links}}</span></h1>
+  {{if not .Links}}
+    <p class="empty">Nothing here. Paste a link above — the tide will carry it out if you don't act.</p>
+  {{end}}
+  <ul class="links">
+    {{range .Links}}
+      <li class="link urgency-{{.Level}}">
+        <div class="meta">
+          <span class="badge {{.Level}}">{{.LevelLabel}}</span>
+          <span class="left">{{.TimeLeft}}</span>
+        </div>
+        <a class="title" href="{{.URL}}" target="_blank" rel="noopener">
+          {{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}
+        </a>
+        {{if .Excerpt}}<p class="excerpt">{{.Excerpt}}</p>{{end}}
+        <span class="domain">{{.Domain}}</span>
+      </li>
+    {{end}}
+  </ul>
+</section>
+{{end}}
