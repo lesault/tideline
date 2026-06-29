@@ -49,9 +49,11 @@
         const row = rows()[idx];
         if (!row) return;
         const btn = row.querySelector('button[data-key="' + e.key + '"]');
-        if (btn && btn.form) {
+        if (btn) {
           e.preventDefault();
-          btn.form.requestSubmit(btn);
+          // click() (not form.requestSubmit) so htmx captures the submit button
+          // as the submitter and includes its name/value (e.g. next_step=review).
+          btn.click();
         }
         break;
       }
