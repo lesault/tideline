@@ -230,6 +230,31 @@ func TestEnrichmentIsBounded(t *testing.T) {
 	}
 }
 
+func TestSecurityHeaders(t *testing.T) {
+	e := newTestEnv(t)
+	resp, err := e.client.Get(e.srv.URL + "/login")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := resp.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'self'", "script-src 'self'", "frame-ancestors 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP missing %q; got %q", want, csp)
+		}
+	}
+	// The CSP must not be loosened with unsafe-inline/eval for scripts.
+	if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") || strings.Contains(csp, "unsafe-eval") {
+		t.Errorf("script CSP should stay strict: %q", csp)
+	}
+}
+
 func TestAssetsAreSelfHostedNotCDN(t *testing.T) {
 	e := newTestEnv(t)
 	// No page should pull executable/style assets from a third-party CDN.
@@ -1050,8 +1075,10 @@ func TestDefaultThemeFallsBackToOSScript(t *testing.T) {
 	e.register(t, "t3@example.com", "password1")
 
 	body := e.get(t, "/inbox")
-	if !strings.Contains(body, "prefers-color-scheme") {
-		t.Fatalf("with no stored theme, the inline OS-default script must be present:\n%s", body)
+	// The OS-default logic lives in the (CSP-friendly) external theme.js, loaded
+	// before paint; with no stored theme the server must not hardcode data-theme.
+	if !strings.Contains(body, "/static/theme.js") {
+		t.Fatalf("the theme bootstrap script must be loaded:\n%s", body)
 	}
 	if strings.Contains(body, "data-theme=") {
 		t.Fatalf("with an empty theme, <html> must not hardcode data-theme:\n%s", body)

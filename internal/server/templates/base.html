@@ -4,17 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{block "title" .}}Tideline{{end}}</title>
-  <script>
-    // Before paint: if the server didn't pin a theme (user follows the OS),
-    // pick Deep Tide in dark mode, else Foam & Shore — avoids a flash.
-    (function () {
-      var el = document.documentElement;
-      if (!el.getAttribute("data-theme")) {
-        var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-        el.setAttribute("data-theme", dark ? "deep" : "foam");
-      }
-    })();
-  </script>
+  <script src="/static/theme.js"></script>
   <script src="/static/htmx.min.js" defer></script>
   <link rel="stylesheet" href="/static/app.css">
 </head>

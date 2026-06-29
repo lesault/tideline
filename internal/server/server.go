@@ -117,6 +117,7 @@ func parseTemplates() map[string]*template.Template {
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeaders)
 
 	staticFS, _ := fs.Sub(assets, "static")
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
@@ -173,6 +174,24 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	return r
+}
+
+// securityHeaders sets defensive HTTP headers on every response. The CSP keeps
+// all scripts first-party (script-src 'self' — the UI loads only /static JS, no
+// inline scripts); inline style attributes (e.g. the tide-bar --life) need
+// style-src 'unsafe-inline'. frame-ancestors/X-Frame-Options block clickjacking.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; font-src 'self'; connect-src 'self'; "+
+				"form-action 'self'; frame-ancestors 'none'; base-uri 'self'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RunSweeper periodically moves expired inbox links to the flotsam until the
