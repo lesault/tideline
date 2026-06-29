@@ -1,10 +1,15 @@
+// Package fetch turns a captured URL into display metadata (title, excerpt,
+// image, favicon, domain). Parsing is pure and tested against HTML fixtures;
+// the network Fetch is a thin wrapper so capture never blocks on it.
 package fetch
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"syscall"
 	"time"
 )
 
@@ -17,14 +22,55 @@ type Fetcher struct {
 	client *http.Client
 }
 
-// New returns a Fetcher whose requests time out after the given duration.
-func New(timeout time.Duration) *Fetcher {
-	return &Fetcher{client: &http.Client{Timeout: timeout}}
+// New returns a Fetcher safe for untrusted, user-supplied URLs. It refuses to
+// connect to non-public addresses (loopback, RFC1918/ULA private, link-local
+// including the 169.254.169.254 cloud-metadata endpoint, unspecified, and
+// multicast), enforced at dial time on the initial request AND every redirect
+// hop — so neither a redirect nor DNS rebinding can reach internal services.
+// This is the SSRF guard.
+func New(timeout time.Duration) *Fetcher { return newFetcher(timeout, true) }
+
+// NewAllowingPrivate returns a Fetcher that may connect to private/loopback
+// addresses. Use ONLY with trusted URLs (e.g. tests) — never with user input.
+func NewAllowingPrivate(timeout time.Duration) *Fetcher { return newFetcher(timeout, false) }
+
+func newFetcher(timeout time.Duration, blockPrivate bool) *Fetcher {
+	dialer := &net.Dialer{Timeout: timeout}
+	if blockPrivate {
+		// Control runs after DNS resolution with the concrete IP:port about to
+		// be dialed, for every connection the client makes (including redirects),
+		// which is what makes the check rebinding-safe.
+		dialer.Control = func(network, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("ssrf guard: malformed address %q: %w", address, err)
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || isBlockedIP(ip) {
+				return fmt.Errorf("ssrf guard: refusing to connect to non-public address %s", host)
+			}
+			return nil
+		}
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+	}
+	return &Fetcher{client: &http.Client{Timeout: timeout, Transport: transport}}
+}
+
+// isBlockedIP reports whether ip is anything other than a routable public
+// address.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }
 
 // Fetch GETs url and parses its metadata. It returns an error on transport
-// failure or any non-2xx status, leaving the caller to mark the link's fetch
-// status failed without losing the capture.
+// failure, a blocked (non-public) address, or any non-2xx status, leaving the
+// caller to mark the link's fetch status failed without losing the capture.
 func (f *Fetcher) Fetch(ctx context.Context, url string) (Metadata, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

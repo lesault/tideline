@@ -43,7 +43,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	}))
 	t.Cleanup(upstream.Close)
 
-	s := New(st, auth.NewSessionManager(time.Hour), fetch.New(2*time.Second), wallabag.New(2*time.Second))
+	// The test upstream is a loopback httptest server, so use the private-allowing
+	// fetcher here; the SSRF guard on fetch.New is covered in the fetch package.
+	s := New(st, auth.NewSessionManager(time.Hour), fetch.NewAllowingPrivate(2*time.Second), wallabag.New(2*time.Second))
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
