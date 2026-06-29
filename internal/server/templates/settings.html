@@ -3,6 +3,19 @@
 <section class="settings">
   <h1>Settings</h1>
 
+  <h2>Inbox decay</h2>
+  <p class="hint">
+    How many days a newly captured link lives in your inbox before it washes out
+    to the Flotsam. Lower it to feel more pressure; raise it for a gentler tide.
+    Applies to links you add from now on.
+  </p>
+  <form method="post" action="/settings/ttl" class="ttl-form">
+    <label>Default time-to-live (days)
+      <input type="number" name="days" min="1" max="3650" required value="{{.DefaultTTLDays}}">
+    </label>
+    <button type="submit">Save TTL</button>
+  </form>
+
   <h2>Wallabag</h2>
   <p class="hint">
     Links you choose to keep are pushed to Wallabag for reading and archiving.

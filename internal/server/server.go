@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/cards/{id}/move", s.moveCard)
 		r.Post("/categories", s.addCategory)
 		r.Get("/settings", s.settingsPage)
+		r.Post("/settings/ttl", s.saveTTL)
 		r.Post("/settings/wallabag", s.saveWallabag)
 		r.Post("/links/{id}/archive", s.archiveLink)
 		r.Post("/tokens", s.createToken)
@@ -625,11 +626,30 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w, r, "")
 }
 
+// maxTTLDays caps the configurable TTL at a sane ~10 years.
+const maxTTLDays = 3650
+
+func (s *Server) saveTTL(w http.ResponseWriter, r *http.Request) {
+	days, err := strconv.Atoi(strings.TrimSpace(r.FormValue("days")))
+	if err != nil || days < 1 || days > maxTTLDays {
+		http.Error(w, "TTL must be a whole number of days between 1 and 3650", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateDefaultTTL(r.Context(), userID(r.Context()), days); err != nil {
+		http.Error(w, "could not save TTL", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
 // renderSettings draws the settings page; newToken, when non-empty, is shown
 // once as a freshly minted API token.
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, newToken string) {
 	uid := userID(r.Context())
-	data := map[string]any{}
+	data := map[string]any{"DefaultTTLDays": 14}
+	if u, err := s.store.UserByID(r.Context(), uid); err == nil {
+		data["DefaultTTLDays"] = u.DefaultTTLDays
+	}
 	if acct, err := s.store.WallabagAccount(r.Context(), uid); err == nil {
 		// Echo everything except the password, which we never render back.
 		data["Wallabag"] = map[string]string{

@@ -99,6 +99,23 @@ func TestListInboxIsScopedPerUser(t *testing.T) {
 	}
 }
 
+func TestUpdateDefaultTTL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "ttl@example.com", "h")
+	if u.DefaultTTLDays != 14 {
+		t.Fatalf("new account default TTL = %d, want 14", u.DefaultTTLDays)
+	}
+
+	if err := s.UpdateDefaultTTL(ctx, u.ID, 30); err != nil {
+		t.Fatalf("UpdateDefaultTTL: %v", err)
+	}
+	got, _ := s.UserByID(ctx, u.ID)
+	if got.DefaultTTLDays != 30 {
+		t.Fatalf("default TTL = %d, want 30", got.DefaultTTLDays)
+	}
+}
+
 func TestCreateUserSeedsDefaultCategories(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

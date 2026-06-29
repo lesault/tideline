@@ -299,6 +299,46 @@ func (e *testEnv) saveWallabag(t *testing.T, baseURL string) {
 	resp.Body.Close()
 }
 
+func TestUpdateDefaultTTLViaSettings(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "ttl@example.com", "password1")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/settings/ttl", url.Values{"days": {"3"}})
+	if err != nil {
+		t.Fatalf("ttl post: %v", err)
+	}
+	resp.Body.Close()
+
+	u, _ := e.st.UserByID(context.Background(), 1)
+	if u.DefaultTTLDays != 3 {
+		t.Fatalf("default TTL = %d, want 3", u.DefaultTTLDays)
+	}
+
+	// New captures now expire ~3 days out, not 14.
+	e.captureID(t, "https://example.com/x")
+	links, _ := e.st.ListInbox(context.Background(), 1)
+	got := time.Until(links[0].TTLExpiresAt).Hours()
+	if got < 60 || got > 80 { // ~72h, allowing slack
+		t.Fatalf("new link TTL ~%.0fh, want ~72h", got)
+	}
+}
+
+func TestUpdateDefaultTTLRejectsNonsense(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "bad@example.com", "password1")
+	for _, bad := range []string{"0", "-5", "abc", "100000"} {
+		resp, _ := e.client.PostForm(e.srv.URL+"/settings/ttl", url.Values{"days": {bad}})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("days=%q should be 400, got %d", bad, resp.StatusCode)
+		}
+	}
+	u, _ := e.st.UserByID(context.Background(), 1)
+	if u.DefaultTTLDays != 14 {
+		t.Fatalf("default TTL should stay 14 after bad input, got %d", u.DefaultTTLDays)
+	}
+}
+
 func TestArchivePushesToWallabag(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "wb@example.com", "password1")

@@ -216,6 +216,15 @@ func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (Use
 	return User{ID: id, Email: email, PasswordHash: passwordHash, DefaultTTLDays: 14, Timezone: "UTC", CreatedAt: now}, nil
 }
 
+// UpdateDefaultTTL sets the number of days new captures live before expiring.
+func (s *Store) UpdateDefaultTTL(ctx context.Context, userID int64, days int) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET default_ttl_days = ? WHERE id = ?`, days, userID)
+	if err != nil {
+		return fmt.Errorf("update default ttl: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
 // ListCategories returns a user's categories, alphabetically.
 func (s *Store) ListCategories(ctx context.Context, userID int64) ([]Category, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, color FROM categories WHERE user_id = ? ORDER BY name`, userID)
