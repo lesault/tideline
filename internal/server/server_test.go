@@ -159,6 +159,34 @@ func TestCaptureIsScopedPerUser(t *testing.T) {
 	}
 }
 
+func TestAPIRejectsQueryToken(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "q@example.com", "password1")
+	raw, _, _ := e.st.CreateAPIToken(context.Background(), 1, store.ScopeCapture, "ext")
+
+	// Token in the query string must NOT authenticate the JSON API.
+	resp, err := http.Get(e.srv.URL + "/api/count?token=" + raw)
+	if err != nil {
+		t.Fatalf("count via query: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("query-token on /api/count = %d, want 401", resp.StatusCode)
+	}
+
+	// The same token in the Authorization header works.
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/count", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("count via header: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("bearer-token on /api/count = %d, want 200", resp2.StatusCode)
+	}
+}
+
 func TestSessionCookieSecureFlag(t *testing.T) {
 	e := newTestEnv(t)
 	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

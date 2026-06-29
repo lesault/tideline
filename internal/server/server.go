@@ -230,7 +230,7 @@ func (s *Server) webAuth(next http.Handler) http.Handler {
 
 func (s *Server) apiAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid, scope, ok := s.resolveAPI(r)
+		uid, scope, ok := s.resolveAPI(r, false) // JSON API: header/cookie only
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 			return
@@ -240,14 +240,16 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 	})
 }
 
-// resolveAPI authenticates an API/feed request by session cookie (scope
-// "session", full access) or by a scoped API token (Bearer header or ?token=).
-func (s *Server) resolveAPI(r *http.Request) (int64, string, bool) {
+// resolveAPI authenticates by session cookie or a scoped token in the
+// Authorization: Bearer header. The ?token= query form is only honoured when
+// allowQueryToken is set (the RSS feed, where readers can't send headers) —
+// keeping tokens out of URLs/logs for the JSON API.
+func (s *Server) resolveAPI(r *http.Request, allowQueryToken bool) (int64, string, bool) {
 	if uid, _, ok := s.resolve(r); ok {
 		return uid, scopeSession, true
 	}
 	raw := bearerToken(r)
-	if raw == "" {
+	if raw == "" && allowQueryToken {
 		raw = r.URL.Query().Get("token")
 	}
 	if raw != "" {
@@ -810,7 +812,7 @@ func (s *Server) countAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dueFeed(w http.ResponseWriter, r *http.Request) {
-	uid, sc, ok := s.resolveAPI(r)
+	uid, sc, ok := s.resolveAPI(r, true) // RSS feed: ?token= allowed
 	if !ok || (sc != scopeSession && sc != store.ScopeFeed) {
 		http.Error(w, "a feed-scoped token is required", http.StatusUnauthorized)
 		return
