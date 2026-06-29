@@ -1,5 +1,5 @@
 // Package server wires Tideline's HTTP layer: session-based auth, link capture,
-// the urgency-sorted inbox, the graveyard, and the embedded htmx UI.
+// the urgency-sorted inbox, the flotsam, and the embedded htmx UI.
 package server
 
 import (
@@ -50,7 +50,7 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher) *Server {
 }
 
 func parseTemplates() map[string]*template.Template {
-	pages := []string{"login", "register", "inbox", "graveyard"}
+	pages := []string{"login", "register", "inbox", "flotsam"}
 	m := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+p+".html"))
@@ -80,7 +80,7 @@ func (s *Server) Handler() http.Handler {
 			http.Redirect(w, r, "/inbox", http.StatusSeeOther)
 		})
 		r.Get("/inbox", s.inboxPage)
-		r.Get("/graveyard", s.graveyardPage)
+		r.Get("/flotsam", s.flotsamPage)
 		r.Post("/links", s.captureForm)
 	})
 
@@ -94,7 +94,7 @@ func (s *Server) Handler() http.Handler {
 	return r
 }
 
-// RunSweeper periodically moves expired inbox links to the graveyard until the
+// RunSweeper periodically moves expired inbox links to the flotsam until the
 // context is cancelled. It runs one sweep immediately so a freshly started
 // server reflects expiries without waiting a full interval.
 func (s *Server) RunSweeper(ctx context.Context, interval time.Duration) {
@@ -305,13 +305,13 @@ func (s *Server) inboxPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, r, "inbox", map[string]any{"Links": s.viewLinks(links)})
 }
 
-func (s *Server) graveyardPage(w http.ResponseWriter, r *http.Request) {
-	links, err := s.store.ListByStatus(r.Context(), userID(r.Context()), store.StatusGraveyard)
+func (s *Server) flotsamPage(w http.ResponseWriter, r *http.Request) {
+	links, err := s.store.ListByStatus(r.Context(), userID(r.Context()), store.StatusFlotsam)
 	if err != nil {
-		http.Error(w, "could not load graveyard", http.StatusInternalServerError)
+		http.Error(w, "could not load flotsam", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, r, "graveyard", map[string]any{"Links": s.viewLinks(links)})
+	s.renderPage(w, r, "flotsam", map[string]any{"Links": s.viewLinks(links)})
 }
 
 func (s *Server) inboxAPI(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +327,7 @@ func (s *Server) inboxAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// viewLink is the inbox/graveyard presentation model.
+// viewLink is the inbox/flotsam presentation model.
 type viewLink struct {
 	URL, Title, Excerpt, Domain string
 	Level                       string

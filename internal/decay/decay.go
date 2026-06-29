@@ -14,7 +14,7 @@ const (
 	Fresh   Level = iota // plenty of time left
 	Aging                // past the halfway point of its life
 	DueSoon              // in the final stretch before expiry
-	Expired              // TTL elapsed; belongs in the graveyard
+	Expired              // TTL elapsed; belongs in the flotsam
 )
 
 func (l Level) String() string {

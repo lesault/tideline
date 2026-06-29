@@ -1,7 +1,7 @@
 # 🌊 Tideline
 
 **A read-later inbox that fights back.** Links you save *decay* — if you don't
-act on them before their time runs out, they wash out to a graveyard. The keepers
+act on them before their time runs out, they wash out to the Flotsam. The keepers
 get pushed to [Wallabag](https://wallabag.org) for real reading and archiving.
 
 Most bookmark managers are infinite, guilt-free backlogs. Tideline is the
@@ -9,7 +9,7 @@ opposite: a triage funnel with a deliberate forcing function, so the links you
 save actually get used.
 
 > Status: **early milestone (M1)** — capture, an urgency-sorted inbox, automatic
-> metadata previews, and TTL decay to the graveyard all work. Quick-triage,
+> metadata previews, and TTL decay to the Flotsam all work. Quick-triage,
 > Kanban, the Wallabag push, the due-feed, and the browser extension are on the
 > roadmap below.
 
@@ -18,13 +18,13 @@ save actually get used.
 ```
 capture ─▶ inbox ─▶ (triage) ─▶ Kanban ─▶ ┬─ pushed to Wallabag
               │                            ├─ dropped
-              └─ TTL elapses ──────────────┴─ graveyard (kept, not deleted)
+              └─ TTL elapses ──────────────┴─ Flotsam (kept, not deleted)
 ```
 
 Every captured link gets a time-to-live (14 days by default, per-account
 configurable). As it ages it escalates through **fresh → aging → due soon →
 expired**; the inbox is always sorted most-urgent-first. A background sweep moves
-expired links to the graveyard, where they're searchable but out of your way.
+expired links to the Flotsam, where they're searchable but out of your way.
 
 ## Quick start (Docker)
 
@@ -50,7 +50,7 @@ All settings are environment variables:
 | `TIDELINE_DB` | `tideline.db` (`/data/tideline.db` in Docker) | SQLite file path |
 | `TIDELINE_SESSION_TTL` | `720h` (30 days) | How long a login stays valid |
 | `TIDELINE_FETCH_TIMEOUT` | `15s` | Per-link metadata fetch timeout |
-| `TIDELINE_SWEEP_INTERVAL` | `1h` | How often expired links are swept to the graveyard |
+| `TIDELINE_SWEEP_INTERVAL` | `1h` | How often expired links are swept to the Flotsam |
 
 ## Tech
 

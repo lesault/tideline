@@ -27,12 +27,35 @@ var (
 
 // Link statuses — the stages of the triage funnel.
 const (
-	StatusInbox     = "inbox"
-	StatusTriaged   = "triaged"
-	StatusArchived  = "archived"
-	StatusDropped   = "dropped"
-	StatusGraveyard = "graveyard"
+	StatusInbox    = "inbox"
+	StatusTriaged  = "triaged"
+	StatusArchived = "archived"
+	StatusDropped  = "dropped"
+	StatusFlotsam  = "flotsam"
 )
+
+// Kanban board columns for triaged links, in left-to-right order.
+const (
+	ColReviewing = "Reviewing"
+	ColNext      = "Next"
+	ColDone      = "Done"
+)
+
+// BoardColumns lists the valid columns in display order.
+var BoardColumns = []string{ColReviewing, ColNext, ColDone}
+
+// ValidColumn reports whether c is a known board column.
+func ValidColumn(c string) bool {
+	for _, col := range BoardColumns {
+		if col == c {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultCategories are seeded for every new account.
+var defaultCategories = []string{"Tech", "Read", "Reference", "Fun"}
 
 // timeFormat is the canonical on-disk time encoding: sortable RFC3339 in UTC.
 const timeFormat = time.RFC3339Nano
@@ -50,6 +73,14 @@ type User struct {
 	DefaultTTLDays int
 	Timezone       string
 	CreatedAt      time.Time
+}
+
+// Category is a user-defined label for triaged links.
+type Category struct {
+	ID     int64
+	UserID int64
+	Name   string
+	Color  string
 }
 
 // Link is a captured URL moving through the funnel.
@@ -148,7 +179,44 @@ func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (Use
 		return User{}, fmt.Errorf("insert user: %w", err)
 	}
 	id, _ := res.LastInsertId()
+	for _, name := range defaultCategories {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO categories (user_id, name) VALUES (?, ?)`, id, name); err != nil {
+			return User{}, fmt.Errorf("seed category %q: %w", name, err)
+		}
+	}
 	return User{ID: id, Email: email, PasswordHash: passwordHash, DefaultTTLDays: 14, Timezone: "UTC", CreatedAt: now}, nil
+}
+
+// ListCategories returns a user's categories, alphabetically.
+func (s *Store) ListCategories(ctx context.Context, userID int64) ([]Category, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, color FROM categories WHERE user_id = ? ORDER BY name`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query categories: %w", err)
+	}
+	defer rows.Close()
+	var out []Category
+	for rows.Next() {
+		var c Category
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Name, &c.Color); err != nil {
+			return nil, fmt.Errorf("scan category: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CreateCategory adds a category. Returns ErrDuplicate if the user already has
+// one with that name.
+func (s *Store) CreateCategory(ctx context.Context, userID int64, name string) (Category, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO categories (user_id, name) VALUES (?, ?)`, userID, name)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Category{}, ErrDuplicate
+		}
+		return Category{}, fmt.Errorf("insert category: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return Category{ID: id, UserID: userID, Name: name}, nil
 }
 
 // UserByEmail looks up an account by email. Returns ErrNotFound if absent.
@@ -274,16 +342,80 @@ func (s *Store) UpdateMetadata(ctx context.Context, id int64, m Metadata, fetchS
 }
 
 // SweepExpired moves every inbox link whose TTL has elapsed (<= now) into the
-// graveyard in a single statement, returning how many were moved. Idempotent.
+// flotsam in a single statement, returning how many were moved. Idempotent.
 func (s *Store) SweepExpired(ctx context.Context, now time.Time) (int, error) {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE links SET status = ? WHERE status = ? AND ttl_expires_at <= ?`,
-		StatusGraveyard, StatusInbox, now.UTC().Format(timeFormat))
+		StatusFlotsam, StatusInbox, now.UTC().Format(timeFormat))
 	if err != nil {
 		return 0, fmt.Errorf("sweep expired: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// TriageLink moves an inbox link onto the board: it records the chosen category
+// (nil clears it) and next-step, lands the card in the Reviewing column, and
+// stamps reviewed_at. Scoped to userID — a foreign link yields ErrNotFound.
+// Triaged links leave the inbox, so the decay sweep no longer touches them.
+func (s *Store) TriageLink(ctx context.Context, userID, linkID int64, categoryID *int64, nextStep string) error {
+	pos := s.nextBoardPosition(ctx, userID, ColReviewing)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET status = ?, category_id = ?, next_step = ?, board_column = ?, board_position = ?, reviewed_at = ?
+		 WHERE id = ? AND user_id = ?`,
+		StatusTriaged, categoryID, nextStep, ColReviewing, pos, time.Now().UTC().Format(timeFormat), linkID, userID)
+	if err != nil {
+		return fmt.Errorf("triage link: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+// DropLink discards a link (status=dropped). Scoped to userID.
+func (s *Store) DropLink(ctx context.Context, userID, linkID int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE links SET status = ? WHERE id = ? AND user_id = ?`,
+		StatusDropped, linkID, userID)
+	if err != nil {
+		return fmt.Errorf("drop link: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+// MoveCard relocates a board card to column at position. Scoped to userID;
+// rejects unknown columns.
+func (s *Store) MoveCard(ctx context.Context, userID, linkID int64, column string, position int) error {
+	if !ValidColumn(column) {
+		return fmt.Errorf("invalid board column %q", column)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET board_column = ?, board_position = ? WHERE id = ? AND user_id = ? AND status = ?`,
+		column, position, linkID, userID, StatusTriaged)
+	if err != nil {
+		return fmt.Errorf("move card: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+// ListBoard returns a user's triaged cards ordered by column then position.
+func (s *Store) ListBoard(ctx context.Context, userID int64) ([]Link, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
+			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
+			reviewed_at, archived_at, wallabag_entry_id, fetch_status
+		 FROM links WHERE user_id = ? AND status = ? ORDER BY board_column ASC, board_position ASC, id ASC`,
+		userID, StatusTriaged)
+	if err != nil {
+		return nil, fmt.Errorf("query board: %w", err)
+	}
+	defer rows.Close()
+	return scanLinks(rows)
+}
+
+func (s *Store) nextBoardPosition(ctx context.Context, userID int64, column string) int {
+	var p int
+	s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(board_position), -1) + 1 FROM links WHERE user_id = ? AND board_column = ?`,
+		userID, column).Scan(&p)
+	return p
 }
 
 // --- helpers ---
@@ -305,6 +437,13 @@ func scanLinks(rows *sql.Rows) ([]Link, error) {
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+func notFoundIfNoRows(res sql.Result) error {
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func parseTime(s string) time.Time {
