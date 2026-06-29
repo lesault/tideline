@@ -26,15 +26,19 @@
         {{end}}
       </fieldset>
       <fieldset class="steps">
-        <legend>Next step</legend>
-        <button name="next_step" value="read" class="step" accesskey="r">Read now <kbd>r</kbd></button>
+        <legend>Park on board</legend>
         <button name="next_step" value="schedule" class="step" accesskey="s">Schedule <kbd>s</kbd></button>
         <button name="next_step" value="reference" class="step" accesskey="f">Reference <kbd>f</kbd></button>
       </fieldset>
     </form>
-    <form method="post" action="/links/{{.Card.ID}}/drop" class="drop-form">
-      <button class="drop" accesskey="d">Drop <kbd>d</kbd></button>
-    </form>
+    <div class="terminal-actions">
+      <form method="post" action="/links/{{.Card.ID}}/archive" class="inline">
+        <button class="step read" accesskey="r">Read now → Wallabag <kbd>r</kbd></button>
+      </form>
+      <form method="post" action="/links/{{.Card.ID}}/drop" class="inline">
+        <button class="drop" accesskey="d">Drop <kbd>d</kbd></button>
+      </form>
+    </div>
 
     <form method="post" action="/categories" class="add-cat">
       <input type="text" name="name" placeholder="New category…" maxlength="40">

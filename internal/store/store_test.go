@@ -228,6 +228,70 @@ func TestMoveCardAndListBoard(t *testing.T) {
 	}
 }
 
+func TestWallabagAccountSaveLoadAndUpsert(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "wb@example.com", "h")
+
+	if _, err := s.WallabagAccount(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound before any account, got %v", err)
+	}
+
+	acct := WallabagAccount{
+		UserID: u.ID, BaseURL: "https://wb.example", ClientID: "cid",
+		ClientSecret: "sec", Username: "me", Password: "pw",
+	}
+	if err := s.SaveWallabagAccount(ctx, acct); err != nil {
+		t.Fatalf("SaveWallabagAccount: %v", err)
+	}
+	got, err := s.WallabagAccount(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("WallabagAccount: %v", err)
+	}
+	if got.BaseURL != "https://wb.example" || got.ClientID != "cid" || got.Password != "pw" {
+		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+
+	// Saving again updates in place (one account per user).
+	acct.BaseURL = "https://changed.example"
+	if err := s.SaveWallabagAccount(ctx, acct); err != nil {
+		t.Fatalf("re-save: %v", err)
+	}
+	got, _ = s.WallabagAccount(ctx, u.ID)
+	if got.BaseURL != "https://changed.example" {
+		t.Fatalf("upsert did not update base_url: %+v", got)
+	}
+}
+
+func TestArchiveLinkRecordsWallabagEntry(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "arch@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://x.example", CreatedAt: base, TTLExpiresAt: base.Add(time.Hour)})
+	s.TriageLink(ctx, u.ID, l.ID, nil, "read")
+
+	if err := s.ArchiveLink(ctx, u.ID, l.ID, 4242); err != nil {
+		t.Fatalf("ArchiveLink: %v", err)
+	}
+	got, _ := s.LinkByID(ctx, l.ID)
+	if got.Status != StatusArchived {
+		t.Fatalf("status = %q, want archived", got.Status)
+	}
+	if got.WallabagEntryID == nil || *got.WallabagEntryID != 4242 {
+		t.Fatalf("wallabag entry id not recorded: %+v", got.WallabagEntryID)
+	}
+	if got.ArchivedAt.IsZero() {
+		t.Fatal("archived_at should be set")
+	}
+
+	// Scoped: another user can't archive this link.
+	other, _ := s.CreateUser(ctx, "nope@example.com", "h")
+	if err := s.ArchiveLink(ctx, other.ID, l.ID, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-user archive should be ErrNotFound, got %v", err)
+	}
+}
+
 func TestUpdateMetadataFillsPreviewAndFetchStatus(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -15,6 +15,7 @@ import (
 	"github.com/lesault/tideline/internal/fetch"
 	"github.com/lesault/tideline/internal/server"
 	"github.com/lesault/tideline/internal/store"
+	"github.com/lesault/tideline/internal/wallabag"
 )
 
 func main() {
@@ -28,7 +29,8 @@ func main() {
 
 	sessions := auth.NewSessionManager(cfg.sessionTTL)
 	fetcher := fetch.New(cfg.fetchTimeout)
-	srv := server.New(st, sessions, fetcher)
+	wb := wallabag.New(cfg.fetchTimeout)
+	srv := server.New(st, sessions, fetcher, wb)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -22,6 +22,7 @@ import (
 	"github.com/lesault/tideline/internal/decay"
 	"github.com/lesault/tideline/internal/fetch"
 	"github.com/lesault/tideline/internal/store"
+	"github.com/lesault/tideline/internal/wallabag"
 )
 
 //go:embed templates/*.html static/*
@@ -34,24 +35,26 @@ type Server struct {
 	store    *store.Store
 	sessions *auth.SessionManager
 	fetcher  *fetch.Fetcher
+	wallabag *wallabag.Client
 	tmpl     map[string]*template.Template
 	now      func() time.Time
 }
 
-// New constructs a Server. The metadata fetcher may be nil in tests that don't
-// exercise enrichment.
-func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher) *Server {
+// New constructs a Server. The metadata fetcher and Wallabag client may be nil
+// in tests that don't exercise enrichment or archiving.
+func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallabag.Client) *Server {
 	return &Server{
 		store:    st,
 		sessions: sm,
 		fetcher:  f,
+		wallabag: wb,
 		tmpl:     parseTemplates(),
 		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
 
 func parseTemplates() map[string]*template.Template {
-	pages := []string{"login", "register", "inbox", "flotsam", "triage", "board"}
+	pages := []string{"login", "register", "inbox", "flotsam", "triage", "board", "settings", "message"}
 	m := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+p+".html"))
@@ -89,6 +92,9 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/board", s.boardPage)
 		r.Post("/cards/{id}/move", s.moveCard)
 		r.Post("/categories", s.addCategory)
+		r.Get("/settings", s.settingsPage)
+		r.Post("/settings/wallabag", s.saveWallabag)
+		r.Post("/links/{id}/archive", s.archiveLink)
 	})
 
 	// Authenticated JSON API (401 when signed out).
@@ -475,6 +481,79 @@ func (s *Server) addCategory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, backTo(r, "/triage"), http.StatusSeeOther)
+}
+
+// --- settings & Wallabag archiving (M3) ---
+
+func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
+	data := map[string]any{}
+	if acct, err := s.store.WallabagAccount(r.Context(), userID(r.Context())); err == nil {
+		// Echo everything except the password, which we never render back.
+		data["Wallabag"] = map[string]string{
+			"BaseURL": acct.BaseURL, "ClientID": acct.ClientID,
+			"ClientSecret": acct.ClientSecret, "Username": acct.Username,
+		}
+	}
+	s.renderPage(w, r, "settings", data)
+}
+
+func (s *Server) saveWallabag(w http.ResponseWriter, r *http.Request) {
+	acct := store.WallabagAccount{
+		UserID:       userID(r.Context()),
+		BaseURL:      strings.TrimSpace(r.FormValue("base_url")),
+		ClientID:     strings.TrimSpace(r.FormValue("client_id")),
+		ClientSecret: strings.TrimSpace(r.FormValue("client_secret")),
+		Username:     strings.TrimSpace(r.FormValue("username")),
+		Password:     r.FormValue("password"),
+	}
+	if err := s.store.SaveWallabagAccount(r.Context(), acct); err != nil {
+		http.Error(w, "could not save settings", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// archiveLink pushes a link to the user's Wallabag, then marks it archived. A
+// failure leaves the link untouched and shows a retryable message — never lost.
+func (s *Server) archiveLink(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	uid := userID(r.Context())
+	link, err := s.store.LinkByID(r.Context(), id)
+	if err != nil || link.UserID != uid {
+		http.NotFound(w, r)
+		return
+	}
+	acct, err := s.store.WallabagAccount(r.Context(), uid)
+	if err == store.ErrNotFound {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		http.Error(w, "could not load Wallabag settings", http.StatusInternalServerError)
+		return
+	}
+
+	entryID, err := s.wallabag.Archive(r.Context(), wallabag.Config{
+		BaseURL: acct.BaseURL, ClientID: acct.ClientID, ClientSecret: acct.ClientSecret,
+		Username: acct.Username, Password: acct.Password,
+	}, link.URL)
+	if err != nil {
+		s.renderPage(w, r, "message", map[string]any{
+			"Title": "Wallabag push failed",
+			"Body":  "Couldn't send this link to Wallabag. Your link is safe and still here. Check your Wallabag settings and try again.",
+			"Back":  backTo(r, "/board"),
+		})
+		return
+	}
+	if err := s.store.ArchiveLink(r.Context(), uid, id, entryID); err != nil {
+		http.Error(w, "archived in Wallabag but could not update link", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
 }
 
 type boardColumn struct {

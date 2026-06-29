@@ -16,6 +16,14 @@
                 {{if .NextStep}}<span class="step-tag">{{.NextStep}}</span>{{end}}
                 <span class="domain">{{.Domain}}</span>
               </div>
+              <div class="card-actions">
+                <form method="post" action="/links/{{.ID}}/archive" class="inline">
+                  <button class="mini">→ Wallabag</button>
+                </form>
+                <form method="post" action="/links/{{.ID}}/drop" class="inline">
+                  <button class="mini ghost">Drop</button>
+                </form>
+              </div>
             </li>
           {{end}}
         </ul>

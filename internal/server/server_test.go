@@ -15,6 +15,7 @@ import (
 	"github.com/lesault/tideline/internal/auth"
 	"github.com/lesault/tideline/internal/fetch"
 	"github.com/lesault/tideline/internal/store"
+	"github.com/lesault/tideline/internal/wallabag"
 )
 
 // testEnv spins a full HTTP server backed by a temp DB, plus an upstream page
@@ -41,7 +42,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}))
 	t.Cleanup(upstream.Close)
 
-	s := New(st, auth.NewSessionManager(time.Hour), fetch.New(2*time.Second))
+	s := New(st, auth.NewSessionManager(time.Hour), fetch.New(2*time.Second), wallabag.New(2*time.Second))
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -268,6 +269,100 @@ func TestAddCategory(t *testing.T) {
 }
 
 func fmtInt(i int64) string { return strconv.FormatInt(i, 10) }
+
+// mockWallabagServer issues a token then accepts entry creation, returning a
+// fixed entry id.
+func mockWallabagServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v2/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "tok123", "expires_in": 3600})
+	})
+	mux.HandleFunc("/api/entries.json", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 9001})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (e *testEnv) saveWallabag(t *testing.T, baseURL string) {
+	t.Helper()
+	resp, err := e.client.PostForm(e.srv.URL+"/settings/wallabag", url.Values{
+		"base_url": {baseURL}, "client_id": {"cid"}, "client_secret": {"sec"},
+		"username": {"user"}, "password": {"pw"},
+	})
+	if err != nil {
+		t.Fatalf("save wallabag: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func TestArchivePushesToWallabag(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "wb@example.com", "password1")
+	wb := mockWallabagServer(t)
+	e.saveWallabag(t, wb.URL)
+	id := e.captureID(t, "https://example.com/keep-me")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/archive", url.Values{})
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	resp.Body.Close()
+
+	got, _ := e.st.LinkByID(context.Background(), id)
+	if got.Status != store.StatusArchived {
+		t.Fatalf("status = %q, want archived", got.Status)
+	}
+	if got.WallabagEntryID == nil || *got.WallabagEntryID != 9001 {
+		t.Fatalf("entry id not recorded: %+v", got.WallabagEntryID)
+	}
+}
+
+func TestArchiveWithoutWallabagRedirectsToSettings(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "nowb@example.com", "password1")
+	id := e.captureID(t, "https://example.com/x")
+
+	// Don't follow the redirect, so we can assert where it points.
+	noRedirect := *e.client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.PostForm(e.srv.URL+"/links/1/archive", url.Values{})
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/settings" {
+		t.Fatalf("want 303 → /settings, got %d → %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	got, _ := e.st.LinkByID(context.Background(), id)
+	if got.Status == store.StatusArchived {
+		t.Fatal("link should not be archived without a Wallabag connection")
+	}
+}
+
+func TestArchiveFailureKeepsLink(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "fail@example.com", "password1")
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer down.Close()
+	e.saveWallabag(t, down.URL)
+	id := e.captureID(t, "https://example.com/x")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/archive", url.Values{})
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	resp.Body.Close()
+
+	got, _ := e.st.LinkByID(context.Background(), id)
+	if got.Status == store.StatusArchived {
+		t.Fatal("a failed push must not mark the link archived")
+	}
+}
 
 func TestAsyncEnrichmentFillsTitle(t *testing.T) {
 	e := newTestEnv(t)

@@ -8,10 +8,11 @@ Most bookmark managers are infinite, guilt-free backlogs. Tideline is the
 opposite: a triage funnel with a deliberate forcing function, so the links you
 save actually get used.
 
-> Status: **M2** — capture, an urgency-sorted inbox, automatic metadata
-> previews, TTL decay to the Flotsam, fast keyboard **triage** (category +
-> next-step), and a drag-and-drop **Kanban board** all work. The Wallabag push,
-> the due-feed, and the browser extension are on the roadmap below.
+> Status: **M3** — capture, an urgency-sorted inbox, automatic metadata
+> previews, TTL decay to the Flotsam, fast keyboard **triage**, a drag-and-drop
+> **Kanban board**, and **push-to-Wallabag** (the "keep & read" action, with
+> retry-safe failure handling) all work. The due-feed and the browser extension
+> are on the roadmap below.
 
 ## How it works
 
@@ -64,6 +65,7 @@ internal/decay      pure TTL/urgency engine
 internal/store      SQLite repository + migrations
 internal/auth       password hashing (argon2id) + sessions
 internal/fetch      metadata fetcher + HTML parser
+internal/wallabag   Wallabag API client (OAuth2 + create entry)
 internal/server     HTTP handlers, embedded templates & static assets
 ```
 
@@ -76,7 +78,7 @@ go test ./...
 ## Roadmap
 
 - **M2** — quick keyboard triage (category + next-step) and a Kanban board ✅
-- **M3** — push-to-Wallabag (self-hosted *and* hosted `app.wallabag.it`)
+- **M3** — push-to-Wallabag (self-hosted *and* hosted `app.wallabag.it`) ✅
 - **M4** — scoped API tokens, an RSS feed of due items, and a browser extension
   with a toolbar badge count
 - **M5** — multi-arch image publishing and a tagged release

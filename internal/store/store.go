@@ -83,6 +83,16 @@ type Category struct {
 	Color  string
 }
 
+// WallabagAccount holds a user's Wallabag credentials (one per user).
+type WallabagAccount struct {
+	UserID       int64
+	BaseURL      string
+	ClientID     string
+	ClientSecret string
+	Username     string
+	Password     string
+}
+
 // Link is a captured URL moving through the funnel.
 type Link struct {
 	ID              int64
@@ -408,6 +418,49 @@ func (s *Store) ListBoard(ctx context.Context, userID int64) ([]Link, error) {
 	}
 	defer rows.Close()
 	return scanLinks(rows)
+}
+
+// SaveWallabagAccount stores (or replaces) a user's Wallabag credentials.
+func (s *Store) SaveWallabagAccount(ctx context.Context, a WallabagAccount) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO wallabag_accounts (user_id, base_url, client_id, client_secret, username, password)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   base_url = excluded.base_url, client_id = excluded.client_id,
+		   client_secret = excluded.client_secret, username = excluded.username,
+		   password = excluded.password`,
+		a.UserID, a.BaseURL, a.ClientID, a.ClientSecret, a.Username, a.Password)
+	if err != nil {
+		return fmt.Errorf("save wallabag account: %w", err)
+	}
+	return nil
+}
+
+// WallabagAccount loads a user's Wallabag credentials, ErrNotFound if unset.
+func (s *Store) WallabagAccount(ctx context.Context, userID int64) (WallabagAccount, error) {
+	var a WallabagAccount
+	err := s.db.QueryRowContext(ctx,
+		`SELECT user_id, base_url, client_id, client_secret, username, password FROM wallabag_accounts WHERE user_id = ?`, userID).
+		Scan(&a.UserID, &a.BaseURL, &a.ClientID, &a.ClientSecret, &a.Username, &a.Password)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WallabagAccount{}, ErrNotFound
+	}
+	if err != nil {
+		return WallabagAccount{}, fmt.Errorf("query wallabag account: %w", err)
+	}
+	return a, nil
+}
+
+// ArchiveLink marks a link archived and records its Wallabag entry id. Scoped
+// to userID.
+func (s *Store) ArchiveLink(ctx context.Context, userID, linkID, entryID int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET status = ?, wallabag_entry_id = ?, archived_at = ? WHERE id = ? AND user_id = ?`,
+		StatusArchived, entryID, time.Now().UTC().Format(timeFormat), linkID, userID)
+	if err != nil {
+		return fmt.Errorf("archive link: %w", err)
+	}
+	return notFoundIfNoRows(res)
 }
 
 func (s *Store) nextBoardPosition(ctx context.Context, userID int64, column string) int {

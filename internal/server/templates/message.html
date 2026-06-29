@@ -1,0 +1,8 @@
+{{define "title"}}{{.Title}} · Tideline{{end}}
+{{define "content"}}
+<section class="message">
+  <h1>{{.Title}}</h1>
+  <p>{{.Body}}</p>
+  <p><a class="back" href="{{.Back}}">← Back</a> &nbsp; <a href="/settings">Wallabag settings</a></p>
+</section>
+{{end}}

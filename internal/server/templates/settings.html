@@ -1,0 +1,34 @@
+{{define "title"}}Settings · Tideline{{end}}
+{{define "content"}}
+<section class="settings">
+  <h1>Settings</h1>
+
+  <h2>Wallabag</h2>
+  <p class="hint">
+    Links you choose to keep are pushed to Wallabag for reading and archiving.
+    Works with a self-hosted instance <em>or</em> the hosted service
+    (<code>https://app.wallabag.it</code>). Create an API client under Wallabag's
+    <strong>Developer</strong> settings to get a client ID and secret.
+  </p>
+
+  {{if .Wallabag}}<p class="ok">✓ Wallabag is connected. Re-enter your password below to update.</p>{{end}}
+
+  <form method="post" action="/settings/wallabag" class="settings-form">
+    <label>Instance URL
+      <input type="url" name="base_url" placeholder="https://app.wallabag.it" required
+             value="{{with .Wallabag}}{{.BaseURL}}{{end}}"></label>
+    <label>Client ID
+      <input type="text" name="client_id" required
+             value="{{with .Wallabag}}{{.ClientID}}{{end}}"></label>
+    <label>Client secret
+      <input type="text" name="client_secret" required
+             value="{{with .Wallabag}}{{.ClientSecret}}{{end}}"></label>
+    <label>Username
+      <input type="text" name="username" required
+             value="{{with .Wallabag}}{{.Username}}{{end}}"></label>
+    <label>Password
+      <input type="password" name="password" required placeholder="Wallabag account password"></label>
+    <button type="submit">Save Wallabag connection</button>
+  </form>
+</section>
+{{end}}
