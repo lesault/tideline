@@ -159,6 +159,31 @@ func TestCaptureIsScopedPerUser(t *testing.T) {
 	}
 }
 
+func TestAssetsAreSelfHostedNotCDN(t *testing.T) {
+	e := newTestEnv(t)
+	// No page should pull executable/style assets from a third-party CDN.
+	body := e.get(t, "/login")
+	for _, bad := range []string{"unpkg.com", "googleapis.com", "gstatic.com", "jsdelivr"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("page references external CDN %q (should be self-hosted):\n%s", bad, body)
+		}
+	}
+	if !strings.Contains(body, "/static/htmx.min.js") {
+		t.Fatalf("expected self-hosted htmx reference, got:\n%s", body)
+	}
+	// The vendored assets are actually served (embedded).
+	for _, path := range []string{"/static/htmx.min.js", "/static/fonts/fraunces-latin-wght-normal.woff2"} {
+		resp, err := e.client.Get(e.srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, resp.StatusCode)
+		}
+	}
+}
+
 func TestLoginIsRateLimited(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "rl@example.com", "password1")

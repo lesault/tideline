@@ -27,7 +27,7 @@ import (
 	"github.com/lesault/tideline/internal/wallabag"
 )
 
-//go:embed templates/*.html static/*
+//go:embed templates/*.html static
 var assets embed.FS
 
 const sessionCookie = "tideline_session"
