@@ -249,22 +249,122 @@ func TestMoveCardAndListBoard(t *testing.T) {
 	}
 }
 
-func TestTriageToReferenceColumn(t *testing.T) {
+func TestReferenceLinkSetsStatusAndStampsReviewed(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	u, _ := s.CreateUser(ctx, "ref@example.com", "h")
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://ref.example", CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
 
-	if err := s.TriageLink(ctx, u.ID, l.ID, TriageInput{Column: ColReference, NextStep: "keep"}); err != nil {
-		t.Fatalf("TriageLink: %v", err)
+	if err := s.ReferenceLink(ctx, u.ID, l.ID); err != nil {
+		t.Fatalf("ReferenceLink: %v", err)
 	}
 	got, _ := s.LinkByID(ctx, l.ID)
-	if got.Status != StatusTriaged {
-		t.Fatalf("status = %q, want triaged", got.Status)
+	if got.Status != StatusReference {
+		t.Fatalf("status = %q, want %q", got.Status, StatusReference)
 	}
-	if got.BoardColumn != ColReference {
-		t.Fatalf("board column = %q, want %q", got.BoardColumn, ColReference)
+	if got.ReviewedAt.IsZero() {
+		t.Fatal("reviewed_at should be set")
+	}
+
+	// Scoped: another user can't reference this link.
+	other, _ := s.CreateUser(ctx, "nope@example.com", "h")
+	if err := s.ReferenceLink(ctx, other.ID, l.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-user ReferenceLink should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestUpdateNotesRoundTripsAndIsScoped(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "notes@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://n.example", CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
+
+	// New links start with empty notes.
+	if l0, _ := s.LinkByID(ctx, l.ID); l0.Notes != "" {
+		t.Fatalf("new link notes = %q, want empty", l0.Notes)
+	}
+
+	if err := s.UpdateNotes(ctx, u.ID, l.ID, "remember this snippet"); err != nil {
+		t.Fatalf("UpdateNotes: %v", err)
+	}
+	got, _ := s.LinkByID(ctx, l.ID)
+	if got.Notes != "remember this snippet" {
+		t.Fatalf("notes = %q, want %q", got.Notes, "remember this snippet")
+	}
+
+	// Scoped: another user can't edit notes.
+	other, _ := s.CreateUser(ctx, "nope2@example.com", "h")
+	if err := s.UpdateNotes(ctx, other.ID, l.ID, "hijack"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-user UpdateNotes should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestListReferenceFiltersByStatusAndQuery(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "list@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	mk := func(url, title string) int64 {
+		l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: url, Title: title, CreatedAt: base, TTLExpiresAt: base.Add(48 * time.Hour)})
+		return l.ID
+	}
+
+	// Two reference links and one inbox link.
+	a := mk("https://a.example", "Gopher Guide")
+	b := mk("https://b.example", "Rust Manual")
+	inbox := mk("https://c.example", "Stays in inbox")
+	s.ReferenceLink(ctx, u.ID, a)
+	s.ReferenceLink(ctx, u.ID, b)
+	s.UpdateNotes(ctx, u.ID, a, "useful kubernetes recipe")
+	_ = inbox
+
+	// No query -> only reference-status links.
+	all, err := s.ListReference(ctx, u.ID, "")
+	if err != nil {
+		t.Fatalf("ListReference: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("want 2 reference links, got %d", len(all))
+	}
+
+	// Query matching a word only present in notes.
+	byNotes, _ := s.ListReference(ctx, u.ID, "kubernetes")
+	if len(byNotes) != 1 || byNotes[0].ID != a {
+		t.Fatalf("notes query want [%d], got %+v", a, byNotes)
+	}
+
+	// Query matching a title.
+	byTitle, _ := s.ListReference(ctx, u.ID, "rust")
+	if len(byTitle) != 1 || byTitle[0].ID != b {
+		t.Fatalf("title query want [%d], got %+v", b, byTitle)
+	}
+}
+
+func TestReferenceLinkExcludedFromInboxBoardAndSweep(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "excl@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://ex.example", CreatedAt: base, TTLExpiresAt: base.Add(24 * time.Hour)})
+	if err := s.ReferenceLink(ctx, u.ID, l.ID); err != nil {
+		t.Fatalf("ReferenceLink: %v", err)
+	}
+
+	if inbox, _ := s.ListInbox(ctx, u.ID); len(inbox) != 0 {
+		t.Fatalf("reference link should not appear in inbox, got %d", len(inbox))
+	}
+	if board, _ := s.ListBoard(ctx, u.ID); len(board) != 0 {
+		t.Fatalf("reference link should not appear on board, got %d", len(board))
+	}
+	if n, _ := s.SweepExpired(ctx, base.Add(72*time.Hour)); n != 0 {
+		t.Fatalf("reference link should not be swept, swept %d", n)
+	}
+	got, _ := s.LinkByID(ctx, l.ID)
+	if got.Status != StatusReference {
+		t.Fatalf("status = %q, want %q", got.Status, StatusReference)
 	}
 }
 

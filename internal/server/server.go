@@ -55,7 +55,7 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallaba
 }
 
 func parseTemplates() map[string]*template.Template {
-	pages := []string{"login", "register", "inbox", "flotsam", "triage", "triage_focus", "board", "settings", "message"}
+	pages := []string{"login", "register", "inbox", "flotsam", "triage", "triage_focus", "board", "library", "settings", "message"}
 	m := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+p+".html"))
@@ -91,6 +91,9 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/triage/focus", s.triageFocus)
 		r.Post("/triage/{id}", s.triageSubmit)
 		r.Post("/links/{id}/drop", s.dropLink)
+		r.Post("/links/{id}/reference", s.referenceLink)
+		r.Post("/links/{id}/notes", s.updateNotes)
+		r.Get("/library", s.libraryPage)
 		r.Get("/board", s.boardPage)
 		r.Post("/cards/{id}/move", s.moveCard)
 		r.Post("/categories", s.addCategory)
@@ -472,9 +475,9 @@ func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
 		in.NextStep = "schedule"
 		in.Column = store.ColReviewing
 		in.ScheduledFor = when
-	case "reference":
-		in.NextStep = "reference"
-		in.Column = store.ColReference
+	case "review":
+		in.NextStep = "review"
+		in.Column = store.ColReviewing
 	default:
 		http.Error(w, "unknown next step", http.StatusBadRequest)
 		return
@@ -509,6 +512,67 @@ func (s *Server) dropLink(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, backTo(r, "/inbox"), http.StatusSeeOther)
 }
 
+// referenceLink promotes a board card to the long-lived reference library.
+func (s *Server) referenceLink(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.ReferenceLink(r.Context(), userID(r.Context()), id); err != nil {
+		if err == store.ErrNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "could not reference", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
+}
+
+// updateNotes saves the free-text note on a link.
+func (s *Server) updateNotes(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateNotes(r.Context(), userID(r.Context()), id, r.FormValue("notes")); err != nil {
+		if err == store.ErrNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "could not save notes", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
+}
+
+// libraryPage shows the reference library, optionally filtered by ?q=.
+func (s *Server) libraryPage(w http.ResponseWriter, r *http.Request) {
+	uid := userID(r.Context())
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	links, err := s.store.ListReference(r.Context(), uid, query)
+	if err != nil {
+		http.Error(w, "could not load library", http.StatusInternalServerError)
+		return
+	}
+	cats, _ := s.store.ListCategories(r.Context(), uid)
+	catName := map[int64]string{}
+	for _, c := range cats {
+		catName[c.ID] = c.Name
+	}
+	items := make([]libraryItem, len(links))
+	for i, l := range links {
+		it := libraryItem{ID: l.ID, URL: l.URL, Title: l.Title, Domain: l.Domain, Notes: l.Notes}
+		if l.CategoryID != nil {
+			it.Category = catName[*l.CategoryID]
+		}
+		items[i] = it
+	}
+	s.renderPage(w, r, "library", map[string]any{"Items": items, "Query": query})
+}
+
 func (s *Server) boardPage(w http.ResponseWriter, r *http.Request) {
 	uid := userID(r.Context())
 	cards, err := s.store.ListBoard(r.Context(), uid)
@@ -528,7 +592,7 @@ func (s *Server) boardPage(w http.ResponseWriter, r *http.Request) {
 		index[name] = i
 	}
 	for _, l := range cards {
-		card := boardCard{ID: l.ID, URL: l.URL, Title: l.Title, Domain: l.Domain, NextStep: l.NextStep}
+		card := boardCard{ID: l.ID, URL: l.URL, Title: l.Title, Domain: l.Domain, NextStep: l.NextStep, Notes: l.Notes}
 		if l.CategoryID != nil {
 			card.Category = catName[*l.CategoryID]
 		}
@@ -791,10 +855,16 @@ type boardColumn struct {
 }
 
 type boardCard struct {
-	ID                                     int64
-	URL, Title, Domain, NextStep, Category string
-	Scheduled                              string // formatted scheduled date, "" if none
-	Overdue                                bool   // scheduled date has arrived/passed
+	ID                                            int64
+	URL, Title, Domain, NextStep, Category, Notes string
+	Scheduled                                     string // formatted scheduled date, "" if none
+	Overdue                                       bool   // scheduled date has arrived/passed
+}
+
+// libraryItem is the reference-library presentation model.
+type libraryItem struct {
+	ID                                  int64
+	URL, Title, Domain, Category, Notes string
 }
 
 func levelLabel(l decay.Level) string {

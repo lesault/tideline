@@ -31,11 +31,12 @@ var (
 
 // Link statuses — the stages of the triage funnel.
 const (
-	StatusInbox    = "inbox"
-	StatusTriaged  = "triaged"
-	StatusArchived = "archived"
-	StatusDropped  = "dropped"
-	StatusFlotsam  = "flotsam"
+	StatusInbox     = "inbox"
+	StatusTriaged   = "triaged"
+	StatusArchived  = "archived"
+	StatusDropped   = "dropped"
+	StatusFlotsam   = "flotsam"
+	StatusReference = "reference"
 )
 
 // Kanban board columns for triaged links, in left-to-right order.
@@ -43,11 +44,10 @@ const (
 	ColReviewing = "Reviewing"
 	ColNext      = "Next"
 	ColDone      = "Done"
-	ColReference = "Reference"
 )
 
 // BoardColumns lists the valid columns in display order.
-var BoardColumns = []string{ColReviewing, ColNext, ColDone, ColReference}
+var BoardColumns = []string{ColReviewing, ColNext, ColDone}
 
 // ValidColumn reports whether c is a known board column.
 func ValidColumn(c string) bool {
@@ -124,6 +124,7 @@ type Link struct {
 	FaviconURL      string
 	Domain          string
 	Status          string
+	Notes           string
 	CategoryID      *int64
 	NextStep        string
 	BoardColumn     string
@@ -296,7 +297,7 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 // ListByStatus returns a user's links in a given status, soonest-expiry first.
 func (s *Store) ListByStatus(ctx context.Context, userID int64, status string) ([]Link, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
+		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status, notes,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
 			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links WHERE user_id = ? AND status = ? ORDER BY ttl_expires_at ASC, id ASC`,
@@ -341,7 +342,7 @@ func (s *Store) ListInbox(ctx context.Context, userID int64) ([]Link, error) {
 // LinkByID fetches a single link. Returns ErrNotFound if absent.
 func (s *Store) LinkByID(ctx context.Context, id int64) (Link, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
+		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status, notes,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
 			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links WHERE id = ?`, id)
@@ -436,7 +437,7 @@ func (s *Store) TriageLink(ctx context.Context, userID, linkID int64, in TriageI
 // future-scheduled links are excluded.
 func (s *Store) ScheduledDue(ctx context.Context, userID int64, now time.Time) ([]Link, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
+		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status, notes,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
 			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links
@@ -478,13 +479,62 @@ func (s *Store) MoveCard(ctx context.Context, userID, linkID int64, column strin
 // ListBoard returns a user's triaged cards ordered by column then position.
 func (s *Store) ListBoard(ctx context.Context, userID int64) ([]Link, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status,
+		`SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status, notes,
 			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
 			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
 		 FROM links WHERE user_id = ? AND status = ? ORDER BY board_column ASC, board_position ASC, id ASC`,
 		userID, StatusTriaged)
 	if err != nil {
 		return nil, fmt.Errorf("query board: %w", err)
+	}
+	defer rows.Close()
+	return scanLinks(rows)
+}
+
+// ReferenceLink promotes a link to the long-lived reference status and stamps
+// reviewed_at. Scoped to userID — a foreign link yields ErrNotFound. Reference
+// links leave the inbox and the board, so neither the decay sweep nor the board
+// touches them.
+func (s *Store) ReferenceLink(ctx context.Context, userID, linkID int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET status = ?, reviewed_at = ? WHERE id = ? AND user_id = ?`,
+		StatusReference, time.Now().UTC().Format(timeFormat), linkID, userID)
+	if err != nil {
+		return fmt.Errorf("reference link: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+// UpdateNotes sets the free-text notes on a link. Scoped to userID — a foreign
+// link yields ErrNotFound.
+func (s *Store) UpdateNotes(ctx context.Context, userID, linkID int64, notes string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET notes = ? WHERE id = ? AND user_id = ?`,
+		notes, linkID, userID)
+	if err != nil {
+		return fmt.Errorf("update notes: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+// ListReference returns a user's reference-status links, most-recently-reviewed
+// first. When query is non-empty it filters case-insensitively across title,
+// url, domain, and notes.
+func (s *Store) ListReference(ctx context.Context, userID int64, query string) ([]Link, error) {
+	sqlText := `SELECT id, user_id, url, title, excerpt, image_url, favicon_url, domain, status, notes,
+			category_id, next_step, board_column, board_position, ttl_expires_at, created_at,
+			reviewed_at, archived_at, scheduled_for, wallabag_entry_id, fetch_status
+		 FROM links WHERE user_id = ? AND status = ?`
+	args := []any{userID, StatusReference}
+	if query != "" {
+		like := "%" + strings.ToLower(query) + "%"
+		sqlText += ` AND (lower(title) LIKE ? OR lower(url) LIKE ? OR lower(domain) LIKE ? OR lower(notes) LIKE ?)`
+		args = append(args, like, like, like, like)
+	}
+	sqlText += ` ORDER BY reviewed_at DESC, id DESC`
+	rows, err := s.db.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query reference: %w", err)
 	}
 	defer rows.Close()
 	return scanLinks(rows)
@@ -624,7 +674,7 @@ func scanLinks(rows *sql.Rows) ([]Link, error) {
 		var l Link
 		var ttl, created, reviewed, archived, scheduled string
 		if err := rows.Scan(&l.ID, &l.UserID, &l.URL, &l.Title, &l.Excerpt, &l.ImageURL,
-			&l.FaviconURL, &l.Domain, &l.Status, &l.CategoryID, &l.NextStep, &l.BoardColumn,
+			&l.FaviconURL, &l.Domain, &l.Status, &l.Notes, &l.CategoryID, &l.NextStep, &l.BoardColumn,
 			&l.BoardPosition, &ttl, &created, &reviewed, &archived, &scheduled, &l.WallabagEntryID, &l.FetchStatus); err != nil {
 			return nil, fmt.Errorf("scan link: %w", err)
 		}

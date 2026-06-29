@@ -72,7 +72,7 @@ ul.links { list-style: none; padding: 0; display: grid; gap: .75rem; }
 
 /* --- board (M2) --- */
 .hint { color: var(--muted); font-size: .85rem; }
-.columns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+.columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
 .column { background: #0d141d; border-radius: 10px; padding: .6rem; min-height: 120px; }
 .column h2 { font-size: .9rem; margin: .2rem .2rem .6rem; display: flex; justify-content: space-between; color: var(--muted); }
 .cards { list-style: none; padding: 0; margin: 0; display: grid; gap: .5rem; min-height: 60px; }
@@ -97,3 +97,17 @@ ul.links { list-style: none; padding: 0; display: grid; gap: .75rem; }
 .mini.ghost { background: transparent; color: var(--muted); border-color: #2d3d4f; }
 .message { max-width: 480px; }
 .message .back { color: var(--accent); }
+
+/* --- card notes (board) --- */
+.card-notes { display: flex; gap: .35rem; margin-top: .5rem; }
+.card-notes input { flex: 1; min-width: 0; padding: .25rem .45rem; border-radius: 6px;
+  border: 1px solid #2d3d4f; background: #0d141d; color: var(--ink); font-size: .75rem; }
+
+/* --- library (reference) --- */
+.library-search { display: flex; gap: .5rem; margin: 1rem 0; }
+.library-search input { flex: 1; padding: .5rem .7rem; border-radius: 8px;
+  border: 1px solid #2d3d4f; background: #0d141d; color: var(--ink); }
+.library-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .75rem; }
+.library-item { background: var(--panel); border-radius: 10px; padding: .9rem 1rem; border-left: 4px solid var(--accent); }
+.library-meta { display: flex; gap: .4rem; align-items: center; margin-top: .35rem; flex-wrap: wrap; }
+.library-notes { color: var(--muted); margin: .5rem 0 0; font-size: .9rem; white-space: pre-wrap; }

@@ -1,0 +1,29 @@
+{{define "title"}}Library · Tideline{{end}}
+{{define "content"}}
+<section class="library">
+  <h1>Library</h1>
+  <p class="hint">Your long-lived reference links — kept out of the tide.</p>
+
+  <form method="get" action="/library" class="library-search">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Search title, domain, or notes…">
+    <button>Search</button>
+  </form>
+
+  {{if .Items}}
+  <ul class="library-list">
+    {{range .Items}}
+    <li class="library-item">
+      <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+      <div class="library-meta">
+        {{if .Category}}<span class="tag">{{.Category}}</span>{{end}}
+        <span class="domain">{{.Domain}}</span>
+      </div>
+      {{if .Notes}}<p class="library-notes">{{.Notes}}</p>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty">No reference links yet. Hit <strong>Reference</strong> on a board card to keep it here.</p>
+  {{end}}
+</section>
+{{end}}

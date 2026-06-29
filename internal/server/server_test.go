@@ -75,6 +75,21 @@ func (e *testEnv) captureJSON(t *testing.T, link string) *http.Response {
 
 func jsonString(s string) string { b, _ := json.Marshal(s); return string(b) }
 
+// get fetches an authenticated HTML path and returns its body as a string.
+func (e *testEnv) get(t *testing.T, path string) string {
+	t.Helper()
+	resp, err := e.client.Get(e.srv.URL + path)
+	if err != nil {
+		t.Fatalf("get %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get %s status = %d, want 200", path, resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
 func (e *testEnv) inboxURLs(t *testing.T) []string {
 	t.Helper()
 	resp, err := e.client.Get(e.srv.URL + "/api/links")
@@ -216,7 +231,7 @@ func TestMoveCardEndpoint(t *testing.T) {
 	e.register(t, "mv@example.com", "password1")
 	e.captureID(t, "https://example.com/x")
 	cats, _ := e.st.ListCategories(context.Background(), 1)
-	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"reference"}})
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"review"}})
 
 	resp, err := e.client.PostForm(e.srv.URL+"/cards/1/move", url.Values{"column": {store.ColNext}, "position": {"0"}})
 	if err != nil {
@@ -238,7 +253,7 @@ func TestMoveCardRejectsBadColumn(t *testing.T) {
 	e.register(t, "badcol@example.com", "password1")
 	e.captureID(t, "https://example.com/x")
 	cats, _ := e.st.ListCategories(context.Background(), 1)
-	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"reference"}})
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"category_id": {fmtInt(cats[0].ID)}, "next_step": {"review"}})
 
 	resp, err := e.client.PostForm(e.srv.URL+"/cards/1/move", url.Values{"column": {"Bogus"}, "position": {"0"}})
 	if err != nil {
@@ -581,20 +596,88 @@ func TestScheduleResurfacesInCount(t *testing.T) {
 	}
 }
 
-func TestReferenceLandsInReferenceColumn(t *testing.T) {
+func TestTriageRejectsReferenceNextStep(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "ref@example.com", "password1")
-	id := e.captureID(t, "https://example.com/ref")
+	e.captureID(t, "https://example.com/ref")
 
 	resp, err := e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"reference"}})
 	if err != nil {
 		t.Fatalf("reference: %v", err)
 	}
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("next_step=reference should be 400, got %d", resp.StatusCode)
+	}
+}
 
-	board, _ := e.st.ListBoard(context.Background(), 1)
-	if len(board) != 1 || board[0].ID != id || board[0].BoardColumn != store.ColReference {
-		t.Fatalf("reference triage should land in the Reference column: %+v", board)
+func TestReviewThenReferencePromotesToLibrary(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "lib@example.com", "password1")
+	id := e.captureID(t, "https://example.com/keep-forever")
+
+	// Triage with the timing-only "review" step parks it on the board.
+	resp, err := e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"review"}})
+	if err != nil {
+		t.Fatalf("review triage: %v", err)
+	}
+	resp.Body.Close()
+
+	// The Reference verdict promotes it into the reference library.
+	resp, err = e.client.PostForm(e.srv.URL+"/links/1/reference", url.Values{})
+	if err != nil {
+		t.Fatalf("reference: %v", err)
+	}
+	resp.Body.Close()
+
+	refs, _ := e.st.ListReference(context.Background(), 1, "")
+	if len(refs) != 1 || refs[0].ID != id {
+		t.Fatalf("expected the link in ListReference, got %+v", refs)
+	}
+
+	body := e.get(t, "/library")
+	if !strings.Contains(body, "https://example.com/keep-forever") {
+		t.Fatalf("library should list the referenced link:\n%s", body)
+	}
+}
+
+func TestNotesAreSearchableInLibrary(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "notes@example.com", "password1")
+	e.captureID(t, "https://example.com/notable")
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"review"}})
+	e.client.PostForm(e.srv.URL+"/links/1/reference", url.Values{})
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/notes", url.Values{"notes": {"remember this kubernetes trick"}})
+	if err != nil {
+		t.Fatalf("notes: %v", err)
+	}
+	resp.Body.Close()
+
+	body := e.get(t, "/library?q=kubernetes")
+	if !strings.Contains(body, "https://example.com/notable") {
+		t.Fatalf("library search by note word should find the link:\n%s", body)
+	}
+}
+
+func TestLibraryRenders(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "render@example.com", "password1")
+	e.captureID(t, "https://example.com/in-library")
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"review"}})
+	e.client.PostForm(e.srv.URL+"/links/1/reference", url.Values{})
+
+	resp, err := e.client.Get(e.srv.URL + "/library")
+	if err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("library status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "https://example.com/in-library") {
+		t.Fatalf("library page should show the referenced url:\n%s", body)
 	}
 }
 

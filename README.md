@@ -28,11 +28,15 @@ soon → expired**; the inbox is always sorted most-urgent-first. A background
 sweep moves expired links to the Flotsam, where they're searchable but out of
 your way.
 
-**Triage** the inbox as a scannable list or in a one-card-at-a-time **focus
-mode**. Each link gets a category plus a next step: **Schedule** it for a date
-(it resurfaces in the due count and RSS feed when that date arrives),
-file it as **Reference** (a no-deadline column on the board), **Read now** (push
-to Wallabag), or **Drop** it.
+**Triage decides timing** — scan the inbox as a list or in one-card **focus
+mode** and pick a next step: **Schedule** it for a date (it resurfaces in the due
+count and RSS feed when that date arrives), send it to the board to **Review**,
+**Read now** (push to Wallabag), or **Drop** it.
+
+**The board is where you reach a verdict.** Once you've opened and skimmed a card,
+keep it as **Reference**, **Read → Wallabag**, or **Drop** — and jot a **note**
+on why it matters. References live in a non-decaying, searchable **Library**, so
+the things you mean to come back to are actually findable.
 
 ## Quick start (Docker)
 
