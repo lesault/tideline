@@ -8,6 +8,10 @@
       <li class="link expired">
         <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
         <span class="domain">{{.Domain}}</span>
+        <form method="post" action="/links/{{.ID}}/restore" class="inline restore">
+          <input type="hidden" name="status" value="inbox">
+          <button class="mini">Restore to inbox</button>
+        </form>
       </li>
     {{end}}
   </ul>

@@ -1,0 +1,53 @@
+{{define "triage_row"}}<li id="row-{{.ID}}" class="triage-row urgency-{{.Level}}" tabindex="0">
+  <div class="meta">
+    <span class="badge {{.Level}}">{{.LevelLabel}}</span>
+    <span class="left">{{.TimeLeft}}</span>
+  </div>
+  <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+  <span class="domain">{{.Domain}}</span>
+
+  <form method="post" action="/triage/{{.ID}}" class="row-form" hx-post="/triage/{{.ID}}" hx-target="#row-{{.ID}}" hx-swap="outerHTML">
+    <input type="hidden" name="return" value="{{.Return}}">
+    <select name="category_id">
+      <option value="">— category —</option>
+      {{range .Categories}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+    <input type="date" name="scheduled_for">
+    <button name="next_step" value="schedule" class="step" data-key="s">Schedule</button>
+    <button name="next_step" value="review" class="step" data-key="v">Review</button>
+  </form>
+
+  <div class="row-actions">
+    <form method="post" action="/links/{{.ID}}/archive" class="inline" hx-post="/links/{{.ID}}/archive" hx-target="#row-{{.ID}}" hx-swap="outerHTML">
+      <button class="mini" data-key="w">Read now → Wallabag</button>
+    </form>
+    <form method="post" action="/links/{{.ID}}/drop" class="inline" hx-post="/links/{{.ID}}/drop" hx-target="#row-{{.ID}}" hx-swap="outerHTML">
+      <button class="mini ghost" data-key="d">Drop</button>
+    </form>
+  </div>
+</li>{{end}}
+
+{{define "board_card"}}<li id="card-{{.ID}}" class="card" draggable="true" data-id="{{.ID}}">
+  <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+  <div class="card-meta">
+    {{if .Category}}<span class="tag">{{.Category}}</span>{{end}}
+    {{if .NextStep}}<span class="step-tag">{{.NextStep}}</span>{{end}}
+    {{if .Scheduled}}<span class="scheduled{{if .Overdue}} overdue{{end}}">📅 {{.Scheduled}}</span>{{end}}
+    <span class="domain">{{.Domain}}</span>
+  </div>
+  <form method="post" action="/links/{{.ID}}/notes" class="card-form" hx-target="#card-{{.ID}}" hx-swap="outerHTML">
+    <input type="text" name="notes" value="{{.Notes}}" placeholder="Add a note…" maxlength="500">
+    <div class="card-actions">
+      <button class="mini" formaction="/links/{{.ID}}/notes" hx-post="/links/{{.ID}}/notes" hx-include="closest form">Save</button>
+      <button class="mini" formaction="/links/{{.ID}}/reference" hx-post="/links/{{.ID}}/reference" hx-include="closest form">Reference</button>
+      <button class="mini" formaction="/links/{{.ID}}/archive" hx-post="/links/{{.ID}}/archive" hx-include="closest form">→ Wallabag</button>
+      <button class="mini ghost" formaction="/links/{{.ID}}/drop" hx-post="/links/{{.ID}}/drop" hx-include="closest form">Drop</button>
+    </div>
+  </form>
+</li>{{end}}
+
+{{define "inbox_count_oob"}}<span id="inbox-count" class="count" hx-swap-oob="true">{{.}} in inbox</span>{{end}}
+
+{{define "board_count_oob"}}<span id="count-{{.Name}}" class="count" hx-swap-oob="true">{{.Count}}</span>{{end}}
+
+{{define "toast_oob"}}<div id="toast" hx-swap-oob="innerHTML"><span class="toast-msg">{{.Message}}</span>{{if .Status}} <form method="post" action="/links/{{.LinkID}}/restore" class="undo inline"><input type="hidden" name="status" value="{{.Status}}"><input type="hidden" name="column" value="{{.Column}}"><button class="link">Undo</button></form>{{end}}</div>{{end}}

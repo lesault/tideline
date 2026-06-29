@@ -433,6 +433,102 @@ func TestScheduledDueReturnsOnlyDueLinks(t *testing.T) {
 	}
 }
 
+func TestRestoreToInboxReArmsDecayAndClearsBoardFields(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "restore@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cats, _ := s.ListCategories(ctx, u.ID)
+	catID := cats[0].ID
+
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://r.example", CreatedAt: base, TTLExpiresAt: base.Add(24 * time.Hour)})
+	// Triage it onto the board with category, next-step, and a schedule, give it notes, then drop it.
+	when := time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
+	if err := s.TriageLink(ctx, u.ID, l.ID, TriageInput{CategoryID: &catID, NextStep: "read", Column: ColNext, ScheduledFor: when}); err != nil {
+		t.Fatalf("TriageLink: %v", err)
+	}
+	if err := s.UpdateNotes(ctx, u.ID, l.ID, "keep me"); err != nil {
+		t.Fatalf("UpdateNotes: %v", err)
+	}
+	if err := s.DropLink(ctx, u.ID, l.ID); err != nil {
+		t.Fatalf("DropLink: %v", err)
+	}
+
+	newExpiry := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	if err := s.RestoreToInbox(ctx, u.ID, l.ID, newExpiry); err != nil {
+		t.Fatalf("RestoreToInbox: %v", err)
+	}
+
+	got, _ := s.LinkByID(ctx, l.ID)
+	if got.Status != StatusInbox {
+		t.Fatalf("status = %q, want inbox", got.Status)
+	}
+	if !got.TTLExpiresAt.Equal(newExpiry) {
+		t.Fatalf("ttl_expires_at = %v, want %v", got.TTLExpiresAt, newExpiry)
+	}
+	if got.BoardColumn != "" {
+		t.Fatalf("board_column = %q, want empty", got.BoardColumn)
+	}
+	if !got.ScheduledFor.IsZero() {
+		t.Fatalf("scheduled_for = %v, want zero", got.ScheduledFor)
+	}
+	if got.NextStep != "" {
+		t.Fatalf("next_step = %q, want empty", got.NextStep)
+	}
+	// category_id and notes are preserved.
+	if got.CategoryID == nil || *got.CategoryID != catID {
+		t.Fatalf("category_id = %v, want %d", got.CategoryID, catID)
+	}
+	if got.Notes != "keep me" {
+		t.Fatalf("notes = %q, want %q", got.Notes, "keep me")
+	}
+
+	// Scoped: another user can't restore this link.
+	other, _ := s.CreateUser(ctx, "nope-ri@example.com", "h")
+	if err := s.RestoreToInbox(ctx, other.ID, l.ID, newExpiry); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-user RestoreToInbox should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestRestoreToBoardReturnsReferenceToBoard(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "rb@example.com", "h")
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l, _ := s.CreateLink(ctx, Link{UserID: u.ID, URL: "https://rb.example", CreatedAt: base, TTLExpiresAt: base.Add(24 * time.Hour)})
+	if err := s.UpdateNotes(ctx, u.ID, l.ID, "still useful"); err != nil {
+		t.Fatalf("UpdateNotes: %v", err)
+	}
+	if err := s.ReferenceLink(ctx, u.ID, l.ID); err != nil {
+		t.Fatalf("ReferenceLink: %v", err)
+	}
+
+	if err := s.RestoreToBoard(ctx, u.ID, l.ID, ColReviewing); err != nil {
+		t.Fatalf("RestoreToBoard: %v", err)
+	}
+	got, _ := s.LinkByID(ctx, l.ID)
+	if got.Status != StatusTriaged {
+		t.Fatalf("status = %q, want triaged", got.Status)
+	}
+	if got.BoardColumn != ColReviewing {
+		t.Fatalf("board_column = %q, want %q", got.BoardColumn, ColReviewing)
+	}
+	if got.Notes != "still useful" {
+		t.Fatalf("notes = %q, want preserved", got.Notes)
+	}
+
+	// An invalid column is rejected (not a silent no-op).
+	if err := s.RestoreToBoard(ctx, u.ID, l.ID, "Nonsense"); err == nil {
+		t.Fatal("expected error restoring to an invalid column")
+	}
+
+	// Scoped: another user can't restore this link.
+	other, _ := s.CreateUser(ctx, "nope-rb@example.com", "h")
+	if err := s.RestoreToBoard(ctx, other.ID, l.ID, ColReviewing); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-user RestoreToBoard should be ErrNotFound, got %v", err)
+	}
+}
+
 func TestAPITokenCreateResolveListDelete(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

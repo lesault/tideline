@@ -19,6 +19,11 @@
         <span class="domain">{{.Domain}}</span>
       </div>
       {{if .Notes}}<p class="library-notes">{{.Notes}}</p>{{end}}
+      <form method="post" action="/links/{{.ID}}/restore" class="inline restore">
+        <input type="hidden" name="status" value="triaged">
+        <input type="hidden" name="column" value="Reviewing">
+        <button class="mini">Return to board</button>
+      </form>
     </li>
     {{end}}
   </ul>

@@ -6,34 +6,9 @@
   <div class="columns">
     {{range .Columns}}
       <div class="column" data-column="{{.Name}}">
-        <h2>{{.Name}} <span class="count">{{len .Cards}}</span></h2>
+        <h2>{{.Name}} <span id="count-{{.Name}}" class="count">{{len .Cards}}</span></h2>
         <ul class="cards" data-column="{{.Name}}">
-          {{range .Cards}}
-            <li class="card" draggable="true" data-id="{{.ID}}">
-              <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
-              <div class="card-meta">
-                {{if .Category}}<span class="tag">{{.Category}}</span>{{end}}
-                {{if .NextStep}}<span class="step-tag">{{.NextStep}}</span>{{end}}
-                {{if .Scheduled}}<span class="scheduled{{if .Overdue}} overdue{{end}}">📅 {{.Scheduled}}</span>{{end}}
-                <span class="domain">{{.Domain}}</span>
-              </div>
-              <form method="post" action="/links/{{.ID}}/notes" class="card-notes">
-                <input type="text" name="notes" value="{{.Notes}}" placeholder="Add a note…" maxlength="500">
-                <button class="mini">Save</button>
-              </form>
-              <div class="card-actions">
-                <form method="post" action="/links/{{.ID}}/reference" class="inline">
-                  <button class="mini">Reference</button>
-                </form>
-                <form method="post" action="/links/{{.ID}}/archive" class="inline">
-                  <button class="mini">→ Wallabag</button>
-                </form>
-                <form method="post" action="/links/{{.ID}}/drop" class="inline">
-                  <button class="mini ghost">Drop</button>
-                </form>
-              </div>
-            </li>
-          {{end}}
+          {{range .Cards}}{{template "board_card" .}}{{end}}
         </ul>
       </div>
     {{end}}

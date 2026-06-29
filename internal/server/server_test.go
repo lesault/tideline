@@ -681,6 +681,160 @@ func TestLibraryRenders(t *testing.T) {
 	}
 }
 
+// postHTMX submits a form with the HX-Request header set, simulating htmx.
+func (e *testEnv) postHTMX(t *testing.T, path string, form url.Values) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, e.srv.URL+path, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatalf("htmx post %s: %v", path, err)
+	}
+	return resp
+}
+
+func TestHTMXDropReturnsFragmentNotPage(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "hx@example.com", "password1")
+	e.captureID(t, "https://example.com/x")
+
+	resp := e.postHTMX(t, "/links/1/drop", url.Values{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("htmx drop status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+	if strings.Contains(html, "<html") {
+		t.Fatalf("htmx response should be a fragment, not a full page:\n%s", html)
+	}
+	if !strings.Contains(html, "hx-swap-oob") || !strings.Contains(html, "inbox-count") {
+		t.Fatalf("htmx fragment should carry the OOB inbox-count span:\n%s", html)
+	}
+	if urls := e.inboxURLs(t); len(urls) != 0 {
+		t.Fatalf("dropped link should leave the inbox, got %v", urls)
+	}
+}
+
+func TestNonHTMXDropStillRedirects(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "noh@example.com", "password1")
+	e.captureID(t, "https://example.com/x")
+
+	noRedirect := *e.client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.PostForm(e.srv.URL+"/links/1/drop", url.Values{})
+	if err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("non-htmx drop should 303 redirect, got %d", resp.StatusCode)
+	}
+}
+
+func TestMergedNoteAndReferenceVerdict(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "merge@example.com", "password1")
+	id := e.captureID(t, "https://example.com/merge")
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"review"}})
+
+	// One POST to the reference verdict carrying a note must persist both.
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/reference", url.Values{"notes": {"merged note kept"}})
+	if err != nil {
+		t.Fatalf("reference+note: %v", err)
+	}
+	resp.Body.Close()
+
+	got, _ := e.st.LinkByID(context.Background(), id)
+	if got.Status != store.StatusReference {
+		t.Fatalf("status = %q, want reference", got.Status)
+	}
+	body := e.get(t, "/library")
+	if !strings.Contains(body, "https://example.com/merge") || !strings.Contains(body, "merged note kept") {
+		t.Fatalf("library should show the referenced link with its note:\n%s", body)
+	}
+}
+
+func TestRestoreToInboxFromDrop(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "restore@example.com", "password1")
+	e.captureID(t, "https://example.com/back")
+	e.client.PostForm(e.srv.URL+"/links/1/drop", url.Values{})
+	if urls := e.inboxURLs(t); len(urls) != 0 {
+		t.Fatalf("link should be dropped first, got %v", urls)
+	}
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/restore", url.Values{"status": {"inbox"}})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	resp.Body.Close()
+
+	links, _ := e.st.ListInbox(context.Background(), 1)
+	if len(links) != 1 {
+		t.Fatalf("restored link should be back in the inbox, got %v", links)
+	}
+	if !links[0].TTLExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("restored link should have a future TTL, got %v", links[0].TTLExpiresAt)
+	}
+}
+
+func TestRestoreToBoard(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "rboard@example.com", "password1")
+	id := e.captureID(t, "https://example.com/onboard")
+	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"review"}})
+	e.client.PostForm(e.srv.URL+"/links/1/reference", url.Values{})
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/restore",
+		url.Values{"status": {"triaged"}, "column": {store.ColReviewing}})
+	if err != nil {
+		t.Fatalf("restore to board: %v", err)
+	}
+	resp.Body.Close()
+
+	board, _ := e.st.ListBoard(context.Background(), 1)
+	if len(board) != 1 || board[0].ID != id || board[0].BoardColumn != store.ColReviewing {
+		t.Fatalf("link should be back on the board in Reviewing, got %+v", board)
+	}
+}
+
+func TestFlotsamRestoreReturnsToInbox(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "flot@example.com", "password1")
+	now := time.Now().UTC()
+	_, err := e.st.CreateLink(context.Background(), store.Link{
+		UserID: 1, URL: "https://example.com/old", Domain: "example.com",
+		CreatedAt: now.Add(-20 * 24 * time.Hour), TTLExpiresAt: now.Add(-24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := e.st.SweepExpired(context.Background(), now); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	flot, _ := e.st.ListByStatus(context.Background(), 1, store.StatusFlotsam)
+	if len(flot) != 1 {
+		t.Fatalf("link should be in flotsam after sweep, got %v", flot)
+	}
+
+	resp, err := e.client.PostForm(e.srv.URL+"/links/1/restore", url.Values{"status": {"inbox"}})
+	if err != nil {
+		t.Fatalf("flotsam restore: %v", err)
+	}
+	resp.Body.Close()
+
+	links, _ := e.st.ListInbox(context.Background(), 1)
+	if len(links) != 1 {
+		t.Fatalf("swept link should return to the inbox, got %v", links)
+	}
+}
+
 func TestAsyncEnrichmentFillsTitle(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "c@example.com", "password1")

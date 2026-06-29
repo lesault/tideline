@@ -56,10 +56,12 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallaba
 
 func parseTemplates() map[string]*template.Template {
 	pages := []string{"login", "register", "inbox", "flotsam", "triage", "triage_focus", "board", "library", "settings", "message"}
-	m := make(map[string]*template.Template, len(pages))
+	m := make(map[string]*template.Template, len(pages)+1)
 	for _, p := range pages {
-		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+p+".html"))
+		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/fragments.html", "templates/"+p+".html"))
 	}
+	// "fragments" renders standalone htmx fragments (rows, cards, OOB nodes).
+	m["fragments"] = template.Must(template.ParseFS(assets, "templates/fragments.html"))
 	return m
 }
 
@@ -93,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/links/{id}/drop", s.dropLink)
 		r.Post("/links/{id}/reference", s.referenceLink)
 		r.Post("/links/{id}/notes", s.updateNotes)
+		r.Post("/links/{id}/restore", s.restoreLink)
 		r.Get("/library", s.libraryPage)
 		r.Get("/board", s.boardPage)
 		r.Post("/cards/{id}/move", s.moveCard)
@@ -423,10 +426,15 @@ func (s *Server) triagePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cats, _ := s.store.ListCategories(r.Context(), uid)
+	vls := s.viewLinks(links)
+	rows := make([]triageRowVM, len(vls))
+	for i, vl := range vls {
+		rows[i] = triageRowVM{viewLink: vl, Categories: cats, Return: "/triage"}
+	}
 	s.renderPage(w, r, "triage", map[string]any{
 		"Categories": cats,
 		"Remaining":  len(links),
-		"Links":      s.viewLinks(links),
+		"Rows":       rows,
 	})
 }
 
@@ -491,6 +499,15 @@ func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not triage", http.StatusInternalServerError)
 		return
 	}
+	if isHTMX(r) {
+		msg := "Scheduled"
+		if in.NextStep == "review" {
+			msg = "Sent to review"
+		}
+		// Triage only acts on inbox links, so the prior state is always inbox.
+		s.htmxRemovalResponse(w, r, store.Link{ID: id, Status: store.StatusInbox}, msg, true)
+		return
+	}
 	// Return the user to whichever triage view they came from.
 	dest := "/triage"
 	if ret := r.FormValue("return"); ret == "/triage" || ret == "/triage/focus" {
@@ -505,8 +522,18 @@ func (s *Server) dropLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.DropLink(r.Context(), userID(r.Context()), id); err != nil && err != store.ErrNotFound {
+	uid := userID(r.Context())
+	var prior store.Link
+	if isHTMX(r) {
+		// Capture the prior state so the undo toast can restore it.
+		prior, _ = s.store.LinkByID(r.Context(), id)
+	}
+	if err := s.store.DropLink(r.Context(), uid, id); err != nil && err != store.ErrNotFound {
 		http.Error(w, "could not drop", http.StatusInternalServerError)
+		return
+	}
+	if isHTMX(r) {
+		s.htmxRemovalResponse(w, r, prior, "Dropped", true)
 		return
 	}
 	http.Redirect(w, r, backTo(r, "/inbox"), http.StatusSeeOther)
@@ -519,12 +546,23 @@ func (s *Server) referenceLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.ReferenceLink(r.Context(), userID(r.Context()), id); err != nil {
+	uid := userID(r.Context())
+	var prior store.Link
+	if isHTMX(r) {
+		prior, _ = s.store.LinkByID(r.Context(), id)
+	}
+	// Merged note + verdict: persist any note typed on the card before promoting.
+	s.persistNotesIfPresent(r, uid, id)
+	if err := s.store.ReferenceLink(r.Context(), uid, id); err != nil {
 		if err == store.ErrNotFound {
 			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "could not reference", http.StatusInternalServerError)
+		return
+	}
+	if isHTMX(r) {
+		s.htmxRemovalResponse(w, r, prior, "Referenced", true)
 		return
 	}
 	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
@@ -537,12 +575,24 @@ func (s *Server) updateNotes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.UpdateNotes(r.Context(), userID(r.Context()), id, r.FormValue("notes")); err != nil {
+	uid := userID(r.Context())
+	if err := s.store.UpdateNotes(r.Context(), uid, id, r.FormValue("notes")); err != nil {
 		if err == store.ErrNotFound {
 			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "could not save notes", http.StatusInternalServerError)
+		return
+	}
+	if isHTMX(r) {
+		// Return the refreshed card so its note input keeps the saved value.
+		link, err := s.store.LinkByID(r.Context(), id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		s.frag(w, "board_card", s.cardModel(r.Context(), uid, link))
 		return
 	}
 	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
@@ -820,8 +870,15 @@ func (s *Server) archiveLink(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Merged note + verdict: persist any note typed on the card before sending.
+	s.persistNotesIfPresent(r, uid, id)
 	acct, err := s.store.WallabagAccount(r.Context(), uid)
 	if err == store.ErrNotFound {
+		if isHTMX(r) {
+			w.Header().Set("HX-Redirect", "/settings")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
@@ -835,6 +892,13 @@ func (s *Server) archiveLink(w http.ResponseWriter, r *http.Request) {
 		Username: acct.Username, Password: acct.Password,
 	}, link.URL)
 	if err != nil {
+		if isHTMX(r) {
+			// Keep the card/row in place; surface a non-undoable error toast.
+			w.Header().Set("HX-Reswap", "none")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			s.frag(w, "toast_oob", toastVM{Message: "Wallabag push failed — your link is safe."})
+			return
+		}
 		s.renderPage(w, r, "message", map[string]any{
 			"Title": "Wallabag push failed",
 			"Body":  "Couldn't send this link to Wallabag. Your link is safe and still here. Check your Wallabag settings and try again.",
@@ -844,6 +908,11 @@ func (s *Server) archiveLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.ArchiveLink(r.Context(), uid, id, entryID); err != nil {
 		http.Error(w, "archived in Wallabag but could not update link", http.StatusInternalServerError)
+		return
+	}
+	if isHTMX(r) {
+		// Sending to Wallabag can't be un-sent, so the toast offers no Undo.
+		s.htmxRemovalResponse(w, r, link, "Sent to Wallabag", false)
 		return
 	}
 	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
@@ -865,6 +934,169 @@ type boardCard struct {
 type libraryItem struct {
 	ID                                  int64
 	URL, Title, Domain, Category, Notes string
+}
+
+// --- htmx fragments, undo toast & restore (M5) ---
+
+// isHTMX reports whether the request came from htmx (vs. a plain form submit).
+func isHTMX(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
+
+// triageRowVM carries a triage row plus the data its block needs.
+type triageRowVM struct {
+	viewLink
+	Categories []store.Category
+	Return     string
+}
+
+// toastVM drives the OOB undo toast. A non-empty Status renders an Undo form.
+type toastVM struct {
+	Message string
+	LinkID  int64
+	Status  string // prior status to restore to: "inbox" or "triaged"; "" = no undo
+	Column  string // prior board column (for triaged restores)
+}
+
+// colCountVM drives an OOB board-column count update.
+type colCountVM struct {
+	Name  string
+	Count int
+}
+
+// frag renders a single named fragment template to w (best effort).
+func (s *Server) frag(w http.ResponseWriter, name string, data any) {
+	_ = s.tmpl["fragments"].ExecuteTemplate(w, name, data)
+}
+
+// persistNotesIfPresent saves the optional "notes" field so a typed note plus a
+// verdict click is a single action. Absent field => no change.
+func (s *Server) persistNotesIfPresent(r *http.Request, uid, id int64) {
+	if err := r.ParseForm(); err != nil {
+		return
+	}
+	if _, ok := r.Form["notes"]; ok {
+		_ = s.store.UpdateNotes(r.Context(), uid, id, r.Form.Get("notes"))
+	}
+}
+
+func (s *Server) inboxCount(ctx context.Context, uid int64) int {
+	links, _ := s.store.ListInbox(ctx, uid)
+	return len(links)
+}
+
+func (s *Server) boardColCount(ctx context.Context, uid int64, col string) int {
+	cards, _ := s.store.ListBoard(ctx, uid)
+	n := 0
+	for _, c := range cards {
+		bc := c.BoardColumn
+		if bc == "" {
+			bc = store.ColReviewing
+		}
+		if bc == col {
+			n++
+		}
+	}
+	return n
+}
+
+// cardModel builds the board-card presentation model for a single link.
+func (s *Server) cardModel(ctx context.Context, uid int64, l store.Link) boardCard {
+	cats, _ := s.store.ListCategories(ctx, uid)
+	name := map[int64]string{}
+	for _, c := range cats {
+		name[c.ID] = c.Name
+	}
+	card := boardCard{ID: l.ID, URL: l.URL, Title: l.Title, Domain: l.Domain, NextStep: l.NextStep, Notes: l.Notes}
+	if l.CategoryID != nil {
+		card.Category = name[*l.CategoryID]
+	}
+	if !l.ScheduledFor.IsZero() {
+		card.Scheduled = l.ScheduledFor.Format(scheduleFormat)
+		card.Overdue = !l.ScheduledFor.After(s.now())
+	}
+	return card
+}
+
+// htmxRemovalResponse writes the 200 fragment for an action that removed a
+// row/card: the empty target (caller's hx-target swaps to nothing), an OOB count
+// for the affected view, and an OOB toast (with Undo when undoable). prior is the
+// link's state *before* the action, used to pick the count target and undo data.
+func (s *Server) htmxRemovalResponse(w http.ResponseWriter, r *http.Request, prior store.Link, msg string, undoable bool) {
+	ctx := r.Context()
+	uid := userID(ctx)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	toast := toastVM{Message: msg, LinkID: prior.ID}
+	if prior.Status == store.StatusTriaged {
+		col := prior.BoardColumn
+		if col == "" {
+			col = store.ColReviewing
+		}
+		s.frag(w, "board_count_oob", colCountVM{Name: col, Count: s.boardColCount(ctx, uid, col)})
+		if undoable {
+			toast.Status = store.StatusTriaged
+			toast.Column = col
+		}
+	} else {
+		s.frag(w, "inbox_count_oob", s.inboxCount(ctx, uid))
+		if undoable {
+			toast.Status = store.StatusInbox
+		}
+	}
+	s.frag(w, "toast_oob", toast)
+}
+
+// restoreLink undoes a triage/drop/reference (or the explicit Flotsam/Library
+// restore buttons) by returning a link to the inbox or the board.
+func (s *Server) restoreLink(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	uid := userID(r.Context())
+	switch r.FormValue("status") {
+	case store.StatusInbox:
+		days := 14
+		if u, err := s.store.UserByID(r.Context(), uid); err == nil {
+			days = u.DefaultTTLDays
+		}
+		err = s.store.RestoreToInbox(r.Context(), uid, id, s.now().AddDate(0, 0, days))
+		if err == store.ErrNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, "could not restore", http.StatusInternalServerError)
+			return
+		}
+		s.redirectOrHX(w, r, "/inbox")
+	case store.StatusTriaged:
+		col := r.FormValue("column")
+		if col == "" {
+			col = store.ColReviewing
+		}
+		err = s.store.RestoreToBoard(r.Context(), uid, id, col)
+		if err == store.ErrNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, "could not restore", http.StatusInternalServerError)
+			return
+		}
+		s.redirectOrHX(w, r, "/board")
+	default:
+		http.Error(w, "unknown restore status", http.StatusBadRequest)
+	}
+}
+
+// redirectOrHX sends an htmx client to dest via HX-Redirect, otherwise a 303.
+func (s *Server) redirectOrHX(w http.ResponseWriter, r *http.Request, dest string) {
+	if isHTMX(r) {
+		w.Header().Set("HX-Redirect", dest)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 func levelLabel(l decay.Level) string {

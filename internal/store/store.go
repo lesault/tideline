@@ -461,6 +461,39 @@ func (s *Store) DropLink(ctx context.Context, userID, linkID int64) error {
 	return notFoundIfNoRows(res)
 }
 
+// RestoreToInbox returns a link to the inbox and re-arms its decay clock with
+// newExpiry, clearing the board placement, schedule, and next-step. The
+// category and notes are left intact. Scoped to userID — a foreign link yields
+// ErrNotFound. Used to undo a drop/triage and to "Restore to inbox" from the
+// flotsam.
+func (s *Store) RestoreToInbox(ctx context.Context, userID, linkID int64, newExpiry time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET status = ?, ttl_expires_at = ?, board_column = '', scheduled_for = '', next_step = ''
+		 WHERE id = ? AND user_id = ?`,
+		StatusInbox, newExpiry.UTC().Format(timeFormat), linkID, userID)
+	if err != nil {
+		return fmt.Errorf("restore to inbox: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+// RestoreToBoard returns a link to the board in column with triaged status,
+// clearing any schedule. Notes, category, and next-step are left intact. Rejects
+// unknown columns. Scoped to userID — a foreign link yields ErrNotFound. Used to
+// undo a Reference verdict and to "Return to board" from the library.
+func (s *Store) RestoreToBoard(ctx context.Context, userID, linkID int64, column string) error {
+	if !ValidColumn(column) {
+		return fmt.Errorf("invalid board column %q", column)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE links SET status = ?, board_column = ?, scheduled_for = '' WHERE id = ? AND user_id = ?`,
+		StatusTriaged, column, linkID, userID)
+	if err != nil {
+		return fmt.Errorf("restore to board: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
 // MoveCard relocates a board card to column at position. Scoped to userID;
 // rejects unknown columns.
 func (s *Store) MoveCard(ctx context.Context, userID, linkID int64, column string, position int) error {
