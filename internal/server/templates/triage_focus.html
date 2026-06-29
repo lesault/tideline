@@ -4,21 +4,20 @@
   <div class="triage-head">
     <h1>Focus</h1>
     <span class="count">{{.Remaining}} in inbox</span>
-    <a class="focus-link" href="/triage">← List view</a>
+    <a class="focus-link" href="/inbox">← Inbox</a>
   </div>
 
   {{if .Card}}
   <p class="progress">Card 1 of {{.Remaining}}</p>
-  <article class="triage-card urgency-{{.Card.Level}}">
-    <div class="meta">
-      <span class="badge {{.Card.Level}}">{{.Card.LevelLabel}}</span>
-      <span class="left">{{.Card.TimeLeft}}</span>
-    </div>
+  <article class="triage-card {{.Card.Urgency}}" style="{{.Card.Style}}" data-barnacles="{{.Card.Barnacles}}" data-seed="{{.Card.Seed}}">
+    <div class="card-body">
+    <div class="eyebrow"><span class="badge">{{.Card.LevelLabel}}</span> <span class="left">· {{.Card.TimeLeft}}</span></div>
     <a class="title" href="{{.Card.URL}}" target="_blank" rel="noopener">
       {{if .Card.Title}}{{.Card.Title}}{{else}}{{.Card.URL}}{{end}}
     </a>
-    {{if .Card.Excerpt}}<p class="excerpt">{{.Card.Excerpt}}</p>{{end}}
+    {{if .Card.Excerpt}}<p class="ex">{{.Card.Excerpt}}</p>{{end}}
     <span class="domain">{{.Card.Domain}}</span>
+    </div>
 
     <form method="post" action="/triage/{{.Card.ID}}" class="triage-form">
       <input type="hidden" name="return" value="/triage/focus">
@@ -48,10 +47,12 @@
       <input type="text" name="name" placeholder="New category…" maxlength="40">
       <button>Add</button>
     </form>
+    <div class="barnacles"></div><div class="tide"><div class="tide-fill"></div></div>
   </article>
   {{else}}
   <p class="empty">🎉 Inbox zero. Nothing to triage — the tide is calm.</p>
   <p><a href="/board">Go to your board →</a></p>
   {{end}}
 </section>
+<script src="/static/barnacles.js" defer></script>
 {{end}}

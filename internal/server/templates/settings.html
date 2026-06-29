@@ -3,6 +3,23 @@
 <section class="settings">
   <h1>Settings</h1>
 
+  <h2>Appearance</h2>
+  <p class="hint">
+    Choose how Tideline looks. <strong>System</strong> follows your device's
+    light/dark setting; the named palettes pin a look regardless.
+  </p>
+  <form method="post" action="/settings/theme" class="theme-form">
+    <label>Theme
+      <select name="theme">
+        <option value=""{{if eq .Theme ""}} selected{{end}}>System (follow OS)</option>
+        <option value="deep"{{if eq .Theme "deep"}} selected{{end}}>Deep Tide</option>
+        <option value="foam"{{if eq .Theme "foam"}} selected{{end}}>Foam &amp; Shore</option>
+        <option value="table"{{if eq .Theme "table"}} selected{{end}}>Tide Table</option>
+      </select>
+    </label>
+    <button type="submit">Save appearance</button>
+  </form>
+
   <h2>Inbox decay</h2>
   <p class="hint">
     How many days a newly captured link lives in your inbox before it washes out

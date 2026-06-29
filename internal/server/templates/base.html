@@ -1,9 +1,23 @@
 {{define "base"}}<!doctype html>
-<html lang="en">
+<html lang="en"{{if .Theme}} data-theme="{{.Theme}}"{{end}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{block "title" .}}Tideline{{end}}</title>
+  <script>
+    // Before paint: if the server didn't pin a theme (user follows the OS),
+    // pick Deep Tide in dark mode, else Foam & Shore — avoids a flash.
+    (function () {
+      var el = document.documentElement;
+      if (!el.getAttribute("data-theme")) {
+        var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        el.setAttribute("data-theme", dark ? "deep" : "foam");
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Public+Sans:wght@400;500;600&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -13,9 +27,8 @@
     {{if .UserEmail}}
       <nav>
         <a href="/inbox">Inbox</a>
-        <a href="/triage">Triage</a>
         <a href="/board">Board</a>
-        <a href="/library">Library</a>
+        <a href="/reef">Reef</a>
         <a href="/flotsam">Flotsam</a>
         <a href="/settings">Settings</a>
         <span class="who">{{.UserEmail}}</span>

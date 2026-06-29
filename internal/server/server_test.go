@@ -534,7 +534,7 @@ func TestTriageListShowsMultipleLinks(t *testing.T) {
 	e.captureID(t, "https://example.com/one")
 	e.captureID(t, "https://example.com/two")
 
-	resp, err := e.client.Get(e.srv.URL + "/triage")
+	resp, err := e.client.Get(e.srv.URL + "/inbox")
 	if err != nil {
 		t.Fatalf("triage list: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestReviewThenReferencePromotesToLibrary(t *testing.T) {
 		t.Fatalf("expected the link in ListReference, got %+v", refs)
 	}
 
-	body := e.get(t, "/library")
+	body := e.get(t, "/reef")
 	if !strings.Contains(body, "https://example.com/keep-forever") {
 		t.Fatalf("library should list the referenced link:\n%s", body)
 	}
@@ -654,7 +654,7 @@ func TestNotesAreSearchableInLibrary(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	body := e.get(t, "/library?q=kubernetes")
+	body := e.get(t, "/reef?q=kubernetes")
 	if !strings.Contains(body, "https://example.com/notable") {
 		t.Fatalf("library search by note word should find the link:\n%s", body)
 	}
@@ -667,7 +667,7 @@ func TestLibraryRenders(t *testing.T) {
 	e.client.PostForm(e.srv.URL+"/triage/1", url.Values{"next_step": {"review"}})
 	e.client.PostForm(e.srv.URL+"/links/1/reference", url.Values{})
 
-	resp, err := e.client.Get(e.srv.URL + "/library")
+	resp, err := e.client.Get(e.srv.URL + "/reef")
 	if err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -754,7 +754,7 @@ func TestMergedNoteAndReferenceVerdict(t *testing.T) {
 	if got.Status != store.StatusReference {
 		t.Fatalf("status = %q, want reference", got.Status)
 	}
-	body := e.get(t, "/library")
+	body := e.get(t, "/reef")
 	if !strings.Contains(body, "https://example.com/merge") || !strings.Contains(body, "merged note kept") {
 		t.Fatalf("library should show the referenced link with its note:\n%s", body)
 	}
@@ -832,6 +832,80 @@ func TestFlotsamRestoreReturnsToInbox(t *testing.T) {
 	links, _ := e.st.ListInbox(context.Background(), 1)
 	if len(links) != 1 {
 		t.Fatalf("swept link should return to the inbox, got %v", links)
+	}
+}
+
+func TestSaveThemePersists(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "theme@example.com", "password1")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/settings/theme", url.Values{"theme": {"deep"}})
+	if err != nil {
+		t.Fatalf("theme post: %v", err)
+	}
+	resp.Body.Close()
+
+	u, _ := e.st.UserByID(context.Background(), 1)
+	if u.Theme != "deep" {
+		t.Fatalf("theme = %q, want deep", u.Theme)
+	}
+}
+
+func TestSaveThemeRejectsInvalid(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "badtheme@example.com", "password1")
+
+	resp, err := e.client.PostForm(e.srv.URL+"/settings/theme", url.Values{"theme": {"neon"}})
+	if err != nil {
+		t.Fatalf("theme post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid theme status = %d, want 400", resp.StatusCode)
+	}
+	u, _ := e.st.UserByID(context.Background(), 1)
+	if u.Theme != "" {
+		t.Fatalf("theme should stay empty after bad input, got %q", u.Theme)
+	}
+}
+
+func TestPageReflectsStoredTheme(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "t2@example.com", "password1")
+	if resp, err := e.client.PostForm(e.srv.URL+"/settings/theme", url.Values{"theme": {"deep"}}); err == nil {
+		resp.Body.Close()
+	}
+
+	body := e.get(t, "/inbox")
+	if !strings.Contains(body, `data-theme="deep"`) {
+		t.Fatalf("page should carry the stored theme on <html>:\n%s", body)
+	}
+}
+
+func TestDefaultThemeFallsBackToOSScript(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "t3@example.com", "password1")
+
+	body := e.get(t, "/inbox")
+	if !strings.Contains(body, "prefers-color-scheme") {
+		t.Fatalf("with no stored theme, the inline OS-default script must be present:\n%s", body)
+	}
+	if strings.Contains(body, "data-theme=") {
+		t.Fatalf("with an empty theme, <html> must not hardcode data-theme:\n%s", body)
+	}
+}
+
+func TestInboxCardShowsDecayVisuals(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "decay@example.com", "password1")
+	e.captureID(t, "https://example.com/x")
+
+	body := e.get(t, "/inbox")
+	if !strings.Contains(body, "data-barnacles") {
+		t.Fatalf("inbox card should carry data-barnacles:\n%s", body)
+	}
+	if !strings.Contains(body, "--life:") {
+		t.Fatalf("inbox card should carry a --life style:\n%s", body)
 	}
 }
 

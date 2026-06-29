@@ -77,6 +77,7 @@ type User struct {
 	PasswordHash   string
 	DefaultTTLDays int
 	Timezone       string
+	Theme          string
 	CreatedAt      time.Time
 }
 
@@ -216,7 +217,18 @@ func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (Use
 			return User{}, fmt.Errorf("seed category %q: %w", name, err)
 		}
 	}
-	return User{ID: id, Email: email, PasswordHash: passwordHash, DefaultTTLDays: 14, Timezone: "UTC", CreatedAt: now}, nil
+	return User{ID: id, Email: email, PasswordHash: passwordHash, DefaultTTLDays: 14, Timezone: "UTC", Theme: "", CreatedAt: now}, nil
+}
+
+// UpdateTheme sets a user's theme preference. Empty string means "follow the
+// browser's OS preference". Value validation lives in the server. Scoped — an
+// unknown user yields ErrNotFound.
+func (s *Store) UpdateTheme(ctx context.Context, userID int64, theme string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET theme = ? WHERE id = ?`, theme, userID)
+	if err != nil {
+		return fmt.Errorf("update theme: %w", err)
+	}
+	return notFoundIfNoRows(res)
 }
 
 // UpdateDefaultTTL sets the number of days new captures live before expiring.
@@ -265,8 +277,8 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 	var u User
 	var created string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, default_ttl_days, timezone, created_at FROM users WHERE email = ?`, email).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DefaultTTLDays, &u.Timezone, &created)
+		`SELECT id, email, password_hash, default_ttl_days, timezone, theme, created_at FROM users WHERE email = ?`, email).
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DefaultTTLDays, &u.Timezone, &u.Theme, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -282,8 +294,8 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 	var u User
 	var created string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, default_ttl_days, timezone, created_at FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DefaultTTLDays, &u.Timezone, &created)
+		`SELECT id, email, password_hash, default_ttl_days, timezone, theme, created_at FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DefaultTTLDays, &u.Timezone, &u.Theme, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}

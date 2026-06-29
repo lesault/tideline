@@ -1,10 +1,9 @@
-{{define "triage_row"}}<li id="row-{{.ID}}" class="triage-row urgency-{{.Level}}" tabindex="0">
-  <div class="meta">
-    <span class="badge {{.Level}}">{{.LevelLabel}}</span>
-    <span class="left">{{.TimeLeft}}</span>
+{{define "triage_row"}}<li id="row-{{.ID}}" class="triage-row {{.Urgency}}" style="{{.Style}}" data-barnacles="{{.Barnacles}}" data-seed="{{.Seed}}" tabindex="0">
+  <div class="card-body">
+    <div class="eyebrow"><span class="badge">{{.LevelLabel}}</span> <span class="left">· {{.TimeLeft}}</span></div>
+    <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
+    <span class="domain">{{.Domain}}</span>
   </div>
-  <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
-  <span class="domain">{{.Domain}}</span>
 
   <form method="post" action="/triage/{{.ID}}" class="row-form" hx-post="/triage/{{.ID}}" hx-target="#row-{{.ID}}" hx-swap="outerHTML">
     <input type="hidden" name="return" value="{{.Return}}">
@@ -25,6 +24,7 @@
       <button class="mini ghost" data-key="d">Drop</button>
     </form>
   </div>
+  <div class="barnacles"></div><div class="tide"><div class="tide-fill"></div></div>
 </li>{{end}}
 
 {{define "board_card"}}<li id="card-{{.ID}}" class="card" draggable="true" data-id="{{.ID}}">

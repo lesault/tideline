@@ -66,3 +66,41 @@ func Assess(created, expires, now time.Time) Level {
 func IsExpired(expires, now time.Time) bool {
 	return !now.Before(expires)
 }
+
+// LifeRemaining is the fraction of a link's lifetime still left,
+// (expires-now)/(expires-created), clamped to [0,1]. It drives the draining
+// "tide bar": 1 means brimming (now at or before creation), 0 means drained
+// (now at or past expiry, or a non-positive window).
+func LifeRemaining(created, expires, now time.Time) float64 {
+	life := expires.Sub(created)
+	if life <= 0 {
+		// No positive lifetime to drain: full before the instant, empty at/after.
+		if now.Before(expires) {
+			return 1
+		}
+		return 0
+	}
+	if !now.After(created) {
+		return 1
+	}
+	if !now.Before(expires) {
+		return 0
+	}
+	return expires.Sub(now).Seconds() / life.Seconds()
+}
+
+// BarnacleCount is how much crust a card has accreted, by stage. It is
+// deliberately stage-based (not continuous) to match the approved design:
+// Fresh accretes nothing, then the count jumps at each escalation.
+func BarnacleCount(l Level) int {
+	switch l {
+	case Aging:
+		return 7
+	case DueSoon:
+		return 14
+	case Expired:
+		return 24
+	default: // Fresh
+		return 0
+	}
+}

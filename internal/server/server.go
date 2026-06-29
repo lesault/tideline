@@ -55,7 +55,7 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallaba
 }
 
 func parseTemplates() map[string]*template.Template {
-	pages := []string{"login", "register", "inbox", "flotsam", "triage", "triage_focus", "board", "library", "settings", "message"}
+	pages := []string{"login", "register", "inbox", "flotsam", "triage_focus", "board", "reef", "settings", "message"}
 	m := make(map[string]*template.Template, len(pages)+1)
 	for _, p := range pages {
 		m[p] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/fragments.html", "templates/"+p+".html"))
@@ -89,19 +89,23 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/inbox", s.inboxPage)
 		r.Get("/flotsam", s.flotsamPage)
 		r.Post("/links", s.captureForm)
-		r.Get("/triage", s.triagePage)
+		// Inbox and triage are merged; keep /triage working for old links.
+		r.Get("/triage", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/inbox", http.StatusMovedPermanently)
+		})
 		r.Get("/triage/focus", s.triageFocus)
 		r.Post("/triage/{id}", s.triageSubmit)
 		r.Post("/links/{id}/drop", s.dropLink)
 		r.Post("/links/{id}/reference", s.referenceLink)
 		r.Post("/links/{id}/notes", s.updateNotes)
 		r.Post("/links/{id}/restore", s.restoreLink)
-		r.Get("/library", s.libraryPage)
+		r.Get("/reef", s.reefPage)
 		r.Get("/board", s.boardPage)
 		r.Post("/cards/{id}/move", s.moveCard)
 		r.Post("/categories", s.addCategory)
 		r.Get("/settings", s.settingsPage)
 		r.Post("/settings/ttl", s.saveTTL)
+		r.Post("/settings/theme", s.saveTheme)
 		r.Post("/settings/wallabag", s.saveWallabag)
 		r.Post("/links/{id}/archive", s.archiveLink)
 		r.Post("/tokens", s.createToken)
@@ -361,13 +365,26 @@ func (s *Server) enrich(id int64, rawURL, host string) {
 
 // --- views ---
 
+// inboxPage is the merged inbox+triage: capture, plus the urgency-sorted list of
+// inbox links with inline triage controls (Focus mode offers the stepped view).
 func (s *Server) inboxPage(w http.ResponseWriter, r *http.Request) {
-	links, err := s.store.ListInbox(r.Context(), userID(r.Context()))
+	uid := userID(r.Context())
+	links, err := s.store.ListInbox(r.Context(), uid)
 	if err != nil {
 		http.Error(w, "could not load inbox", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, r, "inbox", map[string]any{"Links": s.viewLinks(links)})
+	cats, _ := s.store.ListCategories(r.Context(), uid)
+	vls := s.viewLinks(links)
+	rows := make([]triageRowVM, len(vls))
+	for i, vl := range vls {
+		rows[i] = triageRowVM{viewLink: vl, Categories: cats, Return: "/inbox"}
+	}
+	s.renderPage(w, r, "inbox", map[string]any{
+		"Categories": cats,
+		"Remaining":  len(links),
+		"Rows":       rows,
+	})
 }
 
 func (s *Server) flotsamPage(w http.ResponseWriter, r *http.Request) {
@@ -392,13 +409,20 @@ func (s *Server) inboxAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// viewLink is the inbox/flotsam/triage presentation model.
+// viewLink is the inbox/flotsam/triage presentation model. It carries the
+// "decay made visible" fields: an urgency class, the draining tide-bar width
+// (as a ready-to-use --life custom property), the barnacle count, and a stable
+// per-link seed so each card grows a unique-but-deterministic crust.
 type viewLink struct {
 	ID                          int64
 	URL, Title, Excerpt, Domain string
 	Level                       string
 	LevelLabel                  string
 	TimeLeft                    string
+	Urgency                     string       // u-fresh | u-aging | u-due | u-expired
+	Style                       template.CSS // inline "--life:0.NN" for the tide bar
+	Barnacles                   int          // how many crust dots to scatter
+	Seed                        int64        // PRNG seed (the link ID)
 }
 
 func (s *Server) viewLinks(links []store.Link) []viewLink {
@@ -406,37 +430,34 @@ func (s *Server) viewLinks(links []store.Link) []viewLink {
 	out := make([]viewLink, len(links))
 	for i, l := range links {
 		lvl := decay.Assess(l.CreatedAt, l.TTLExpiresAt, now)
+		life := decay.LifeRemaining(l.CreatedAt, l.TTLExpiresAt, now)
 		out[i] = viewLink{
 			ID: l.ID, URL: l.URL, Title: l.Title, Excerpt: l.Excerpt, Domain: l.Domain,
 			Level: lvl.String(), LevelLabel: levelLabel(lvl), TimeLeft: timeLeft(l.TTLExpiresAt, now),
+			Urgency:   urgencyClass(lvl),
+			Style:     template.CSS(fmt.Sprintf("--life:%.2f", life)),
+			Barnacles: decay.BarnacleCount(lvl),
+			Seed:      l.ID,
 		}
 	}
 	return out
 }
 
-// --- triage & board (M2) ---
-
-// triagePage renders the list view: every inbox link (urgency-sorted) with
-// inline triage controls and a link to Focus mode.
-func (s *Server) triagePage(w http.ResponseWriter, r *http.Request) {
-	uid := userID(r.Context())
-	links, err := s.store.ListInbox(r.Context(), uid)
-	if err != nil {
-		http.Error(w, "could not load inbox", http.StatusInternalServerError)
-		return
+// urgencyClass maps a decay Level to the CSS class the design uses on cards.
+func urgencyClass(l decay.Level) string {
+	switch l {
+	case decay.Fresh:
+		return "u-fresh"
+	case decay.Aging:
+		return "u-aging"
+	case decay.DueSoon:
+		return "u-due"
+	default:
+		return "u-expired"
 	}
-	cats, _ := s.store.ListCategories(r.Context(), uid)
-	vls := s.viewLinks(links)
-	rows := make([]triageRowVM, len(vls))
-	for i, vl := range vls {
-		rows[i] = triageRowVM{viewLink: vl, Categories: cats, Return: "/triage"}
-	}
-	s.renderPage(w, r, "triage", map[string]any{
-		"Categories": cats,
-		"Remaining":  len(links),
-		"Rows":       rows,
-	})
 }
+
+// --- triage & board (M2) ---
 
 // triageFocus renders the focus view: just the single most-urgent inbox link.
 func (s *Server) triageFocus(w http.ResponseWriter, r *http.Request) {
@@ -508,9 +529,9 @@ func (s *Server) triageSubmit(w http.ResponseWriter, r *http.Request) {
 		s.htmxRemovalResponse(w, r, store.Link{ID: id, Status: store.StatusInbox}, msg, true)
 		return
 	}
-	// Return the user to whichever triage view they came from.
-	dest := "/triage"
-	if ret := r.FormValue("return"); ret == "/triage" || ret == "/triage/focus" {
+	// Return the user to whichever view they came from.
+	dest := "/inbox"
+	if ret := r.FormValue("return"); ret == "/inbox" || ret == "/triage/focus" {
 		dest = ret
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
@@ -598,13 +619,14 @@ func (s *Server) updateNotes(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, backTo(r, "/board"), http.StatusSeeOther)
 }
 
-// libraryPage shows the reference library, optionally filtered by ?q=.
-func (s *Server) libraryPage(w http.ResponseWriter, r *http.Request) {
+// reefPage shows the Reef — the searchable reference collection, optionally
+// filtered by ?q=.
+func (s *Server) reefPage(w http.ResponseWriter, r *http.Request) {
 	uid := userID(r.Context())
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	links, err := s.store.ListReference(r.Context(), uid, query)
 	if err != nil {
-		http.Error(w, "could not load library", http.StatusInternalServerError)
+		http.Error(w, "could not load the reef", http.StatusInternalServerError)
 		return
 	}
 	cats, _ := s.store.ListCategories(r.Context(), uid)
@@ -620,7 +642,7 @@ func (s *Server) libraryPage(w http.ResponseWriter, r *http.Request) {
 		}
 		items[i] = it
 	}
-	s.renderPage(w, r, "library", map[string]any{"Items": items, "Query": query})
+	s.renderPage(w, r, "reef", map[string]any{"Items": items, "Query": query})
 }
 
 func (s *Server) boardPage(w http.ResponseWriter, r *http.Request) {
@@ -691,7 +713,7 @@ func (s *Server) addCategory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.Redirect(w, r, backTo(r, "/triage"), http.StatusSeeOther)
+	http.Redirect(w, r, backTo(r, "/inbox"), http.StatusSeeOther)
 }
 
 // --- nudges: due feed, count, tokens (M4) ---
@@ -838,6 +860,23 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, newToken
 		data["FeedURL"] = externalBase(r) + "/feed/due?token=" + newToken
 	}
 	s.renderPage(w, r, "settings", data)
+}
+
+// saveTheme persists the user's chosen theme. "" means follow the OS; the
+// other three are the named tidal palettes. Anything else is a bad request.
+func (s *Server) saveTheme(w http.ResponseWriter, r *http.Request) {
+	theme := r.FormValue("theme")
+	switch theme {
+	case "", "deep", "foam", "table":
+	default:
+		http.Error(w, "invalid theme", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateTheme(r.Context(), userID(r.Context()), theme); err != nil {
+		http.Error(w, "could not save theme", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
 func (s *Server) saveWallabag(w http.ResponseWriter, r *http.Request) {
@@ -1148,10 +1187,27 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string,
 	if _, hasEmail := data["UserEmail"]; !hasEmail {
 		data["UserEmail"] = email(r.Context())
 	}
+	if _, hasTheme := data["Theme"]; !hasTheme {
+		data["Theme"] = s.userTheme(r.Context())
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
+}
+
+// userTheme returns the signed-in user's stored theme ("" = follow the OS,
+// resolved client-side before paint). Unauthenticated pages get "".
+func (s *Server) userTheme(ctx context.Context) string {
+	uid := userID(ctx)
+	if uid == 0 {
+		return ""
+	}
+	u, err := s.store.UserByID(ctx, uid)
+	if err != nil {
+		return ""
+	}
+	return u.Theme
 }
 
 type apiLink struct {

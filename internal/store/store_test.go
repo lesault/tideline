@@ -116,6 +116,28 @@ func TestUpdateDefaultTTL(t *testing.T) {
 	}
 }
 
+func TestUpdateThemeRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "theme@example.com", "h")
+	if u.Theme != "" {
+		t.Fatalf("new account theme = %q, want empty (follow OS)", u.Theme)
+	}
+
+	if err := s.UpdateTheme(ctx, u.ID, "dark"); err != nil {
+		t.Fatalf("UpdateTheme: %v", err)
+	}
+	got, _ := s.UserByID(ctx, u.ID)
+	if got.Theme != "dark" {
+		t.Fatalf("theme = %q, want %q", got.Theme, "dark")
+	}
+
+	// Scoped: updating a missing user yields ErrNotFound.
+	if err := s.UpdateTheme(ctx, u.ID+999, "light"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateTheme on unknown user should be ErrNotFound, got %v", err)
+	}
+}
+
 func TestCreateUserSeedsDefaultCategories(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

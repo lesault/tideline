@@ -1,19 +1,26 @@
 {{define "title"}}Flotsam · Tideline{{end}}
 {{define "content"}}
-<section class="inbox">
-  <h1>Flotsam <span class="count">{{len .Links}}</span></h1>
+<section class="flotsam">
+  <div class="inbox-head"><h2>Flotsam</h2><span class="count">{{len .Links}}</span></div>
+  <div class="waterline"></div>
   <p class="empty">Links that expired before you acted on them. Kept, not deleted — but out of your way.</p>
-  <ul class="links">
+
+  <div class="cards">
     {{range .Links}}
-      <li class="link expired">
-        <a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a>
-        <span class="domain">{{.Domain}}</span>
-        <form method="post" action="/links/{{.ID}}/restore" class="inline restore">
-          <input type="hidden" name="status" value="inbox">
-          <button class="mini">Restore to inbox</button>
-        </form>
-      </li>
+      <article class="tide-card u-expired" style="{{.Style}}" data-barnacles="{{.Barnacles}}" data-seed="{{.Seed}}">
+        <div class="card-body">
+          <div class="eyebrow">Stranded <span class="left">· washed to the Flotsam</span></div>
+          <h3><a class="title" href="{{.URL}}" target="_blank" rel="noopener">{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}</a></h3>
+          <span class="domain">{{.Domain}}</span>
+          <form method="post" action="/links/{{.ID}}/restore" class="inline restore">
+            <input type="hidden" name="status" value="inbox">
+            <button class="mini">Restore to inbox</button>
+          </form>
+        </div>
+        <div class="barnacles"></div><div class="tide"><div class="tide-fill"></div></div>
+      </article>
     {{end}}
-  </ul>
+  </div>
 </section>
+<script src="/static/barnacles.js" defer></script>
 {{end}}

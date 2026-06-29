@@ -28,15 +28,20 @@ soon → expired**; the inbox is always sorted most-urgent-first. A background
 sweep moves expired links to the Flotsam, where they're searchable but out of
 your way.
 
-**Triage decides timing** — scan the inbox as a list or in one-card **focus
-mode** and pick a next step: **Schedule** it for a date (it resurfaces in the due
-count and RSS feed when that date arrives), send it to the board to **Review**,
-**Read now** (push to Wallabag), or **Drop** it.
+**The inbox decides timing** — capture and triage in one place (or step through
+in one-card **focus mode**) and pick a next step per link: **Schedule** it for a
+date (it resurfaces in the due count and RSS feed when that date arrives), send
+it to the board to **Review**, **Read now** (push to Wallabag), or **Drop** it.
+Aging links show it: a draining tide bar, a barnacle crust that grows with
+neglect, and a bleach to driftwood-grey once stranded.
 
 **The board is where you reach a verdict.** Once you've opened and skimmed a card,
 keep it as **Reference**, **Read → Wallabag**, or **Drop** — and jot a **note**
-on why it matters. References live in a non-decaying, searchable **Library**, so
-the things you mean to come back to are actually findable.
+on why it matters. References live in the **Reef**: a non-decaying, searchable
+collection, so the things you mean to come back to are actually findable.
+
+**Make it yours** — three themes (Deep Tide, Foam & Shore, Tide Table) in
+Settings, defaulting to your OS light/dark preference.
 
 ## Quick start (Docker)
 
