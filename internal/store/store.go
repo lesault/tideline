@@ -5,8 +5,12 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -91,6 +95,21 @@ type WallabagAccount struct {
 	ClientSecret string
 	Username     string
 	Password     string
+}
+
+// API token scopes.
+const (
+	ScopeCapture = "capture" // the browser extension: add links + read counts
+	ScopeFeed    = "feed"    // the RSS due feed
+)
+
+// APIToken is a scoped credential (the raw value is never stored, only its hash).
+type APIToken struct {
+	ID        int64
+	UserID    int64
+	Scope     string
+	Label     string
+	CreatedAt time.Time
 }
 
 // Link is a captured URL moving through the funnel.
@@ -418,6 +437,81 @@ func (s *Store) ListBoard(ctx context.Context, userID int64) ([]Link, error) {
 	}
 	defer rows.Close()
 	return scanLinks(rows)
+}
+
+// --- API tokens ---
+
+// CreateAPIToken mints a new token for userID with the given scope and label.
+// It returns the raw token (shown to the user once) and the stored record.
+func (s *Store) CreateAPIToken(ctx context.Context, userID int64, scope, label string) (string, APIToken, error) {
+	raw := newRawToken()
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO api_tokens (user_id, token_hash, scope, label, created_at) VALUES (?, ?, ?, ?, ?)`,
+		userID, hashToken(raw), scope, label, now.Format(timeFormat))
+	if err != nil {
+		return "", APIToken{}, fmt.Errorf("insert api token: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return raw, APIToken{ID: id, UserID: userID, Scope: scope, Label: label, CreatedAt: now}, nil
+}
+
+// APITokenByValue resolves a raw token to its record. ErrNotFound if unknown.
+func (s *Store) APITokenByValue(ctx context.Context, raw string) (APIToken, error) {
+	var t APIToken
+	var created string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, scope, label, created_at FROM api_tokens WHERE token_hash = ?`, hashToken(raw)).
+		Scan(&t.ID, &t.UserID, &t.Scope, &t.Label, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return APIToken{}, ErrNotFound
+	}
+	if err != nil {
+		return APIToken{}, fmt.Errorf("query api token: %w", err)
+	}
+	t.CreatedAt = parseTime(created)
+	return t, nil
+}
+
+// ListAPITokens returns a user's tokens (metadata only, never the secret).
+func (s *Store) ListAPITokens(ctx context.Context, userID int64) ([]APIToken, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, scope, label, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query api tokens: %w", err)
+	}
+	defer rows.Close()
+	var out []APIToken
+	for rows.Next() {
+		var t APIToken
+		var created string
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Scope, &t.Label, &created); err != nil {
+			return nil, fmt.Errorf("scan api token: %w", err)
+		}
+		t.CreatedAt = parseTime(created)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DeleteAPIToken revokes a token. Scoped to userID.
+func (s *Store) DeleteAPIToken(ctx context.Context, userID, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM api_tokens WHERE id = ? AND user_id = ?`, id, userID)
+	if err != nil {
+		return fmt.Errorf("delete api token: %w", err)
+	}
+	return notFoundIfNoRows(res)
+}
+
+func newRawToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func hashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // SaveWallabagAccount stores (or replaces) a user's Wallabag credentials.

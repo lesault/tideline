@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Tideline",
+  "version": "0.1.0",
+  "description": "Save the current page to your Tideline inbox, and show how many links are due.",
+  "permissions": ["activeTab", "storage", "alarms", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Save to Tideline",
+    "default_icon": "icon.svg"
+  },
+  "icons": { "48": "icon.svg", "96": "icon.svg" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "background": { "scripts": ["background.js"] },
+  "browser_specific_settings": { "gecko": { "id": "tideline@local" } }
+}

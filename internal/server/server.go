@@ -20,6 +20,7 @@ import (
 
 	"github.com/lesault/tideline/internal/auth"
 	"github.com/lesault/tideline/internal/decay"
+	"github.com/lesault/tideline/internal/feed"
 	"github.com/lesault/tideline/internal/fetch"
 	"github.com/lesault/tideline/internal/store"
 	"github.com/lesault/tideline/internal/wallabag"
@@ -95,13 +96,20 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/settings", s.settingsPage)
 		r.Post("/settings/wallabag", s.saveWallabag)
 		r.Post("/links/{id}/archive", s.archiveLink)
+		r.Post("/tokens", s.createToken)
+		r.Post("/tokens/{id}/delete", s.deleteToken)
 	})
 
-	// Authenticated JSON API (401 when signed out).
+	// RSS due feed — authenticated by a feed-scoped token in ?token= (or a
+	// browser session), so feed readers can poll it.
+	r.Get("/feed/due", s.dueFeed)
+
+	// Authenticated JSON API (session cookie or scoped token).
 	r.Group(func(r chi.Router) {
 		r.Use(s.apiAuth)
 		r.Post("/api/links", s.captureAPI)
 		r.Get("/api/links", s.inboxAPI)
+		r.Get("/api/count", s.countAPI)
 	})
 
 	return r
@@ -137,6 +145,7 @@ type ctxKey int
 const (
 	ctxUserID ctxKey = iota
 	ctxEmail
+	ctxScope
 )
 
 func (s *Server) resolve(r *http.Request) (int64, string, bool) {
@@ -168,13 +177,41 @@ func (s *Server) webAuth(next http.Handler) http.Handler {
 
 func (s *Server) apiAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid, email, ok := s.resolve(r)
+		uid, scope, ok := s.resolveAPI(r)
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(withUser(r.Context(), uid, email)))
+		ctx := context.WithValue(withUser(r.Context(), uid, ""), ctxScope, scope)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// resolveAPI authenticates an API/feed request by session cookie (scope
+// "session", full access) or by a scoped API token (Bearer header or ?token=).
+func (s *Server) resolveAPI(r *http.Request) (int64, string, bool) {
+	if uid, _, ok := s.resolve(r); ok {
+		return uid, scopeSession, true
+	}
+	raw := bearerToken(r)
+	if raw == "" {
+		raw = r.URL.Query().Get("token")
+	}
+	if raw != "" {
+		if t, err := s.store.APITokenByValue(r.Context(), raw); err == nil {
+			return t.UserID, t.Scope, true
+		}
+	}
+	return 0, "", false
+}
+
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if strings.HasPrefix(h, prefix) {
+		return strings.TrimSpace(h[len(prefix):])
+	}
+	return ""
 }
 
 func withUser(ctx context.Context, uid int64, email string) context.Context {
@@ -182,8 +219,11 @@ func withUser(ctx context.Context, uid int64, email string) context.Context {
 	return context.WithValue(ctx, ctxEmail, email)
 }
 
+const scopeSession = "session"
+
 func userID(ctx context.Context) int64 { v, _ := ctx.Value(ctxUserID).(int64); return v }
 func email(ctx context.Context) string { v, _ := ctx.Value(ctxEmail).(string); return v }
+func scope(ctx context.Context) string { v, _ := ctx.Value(ctxScope).(string); return v }
 
 // --- auth handlers ---
 
@@ -240,6 +280,10 @@ func (s *Server) startSession(w http.ResponseWriter, uid int64) {
 // --- capture ---
 
 func (s *Server) captureAPI(w http.ResponseWriter, r *http.Request) {
+	if sc := scope(r.Context()); sc != scopeSession && sc != store.ScopeCapture {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "token lacks capture scope"})
+		return
+	}
 	var body struct {
 		URL string `json:"url"`
 	}
@@ -483,16 +527,122 @@ func (s *Server) addCategory(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, backTo(r, "/triage"), http.StatusSeeOther)
 }
 
+// --- nudges: due feed, count, tokens (M4) ---
+
+// dueLinks returns the inbox links that have reached DueSoon or beyond — the
+// ones the nudges (badge, feed) should surface.
+func (s *Server) dueLinks(ctx context.Context, uid int64) ([]store.Link, error) {
+	links, err := s.store.ListInbox(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	var due []store.Link
+	for _, l := range links {
+		if decay.Assess(l.CreatedAt, l.TTLExpiresAt, now) >= decay.DueSoon {
+			due = append(due, l)
+		}
+	}
+	return due, nil
+}
+
+func (s *Server) countAPI(w http.ResponseWriter, r *http.Request) {
+	due, err := s.dueLinks(r.Context(), userID(r.Context()))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not count"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"count": len(due)})
+}
+
+func (s *Server) dueFeed(w http.ResponseWriter, r *http.Request) {
+	uid, sc, ok := s.resolveAPI(r)
+	if !ok || (sc != scopeSession && sc != store.ScopeFeed) {
+		http.Error(w, "a feed-scoped token is required", http.StatusUnauthorized)
+		return
+	}
+	due, err := s.dueLinks(r.Context(), uid)
+	if err != nil {
+		http.Error(w, "could not build feed", http.StatusInternalServerError)
+		return
+	}
+	now := s.now()
+	base := externalBase(r)
+	items := make([]feed.Item, len(due))
+	for i, l := range due {
+		title := l.Title
+		if title == "" {
+			title = l.URL
+		}
+		items[i] = feed.Item{
+			Title:       title,
+			URL:         l.URL,
+			Description: fmt.Sprintf("%s — %s", l.Domain, timeLeft(l.TTLExpiresAt, now)),
+			GUID:        fmt.Sprintf("tideline-%d", l.ID),
+			Published:   l.CreatedAt,
+		}
+	}
+	xml, err := feed.Render("Tideline — due links", base+"/inbox", "Links nearing expiry in your Tideline inbox", items)
+	if err != nil {
+		http.Error(w, "could not render feed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	w.Write([]byte(xml))
+}
+
+func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
+	sc := r.FormValue("scope")
+	if sc != store.ScopeCapture && sc != store.ScopeFeed {
+		http.Error(w, "invalid scope", http.StatusBadRequest)
+		return
+	}
+	raw, _, err := s.store.CreateAPIToken(r.Context(), userID(r.Context()), sc, strings.TrimSpace(r.FormValue("label")))
+	if err != nil {
+		http.Error(w, "could not create token", http.StatusInternalServerError)
+		return
+	}
+	// Show the raw token exactly once, inline on the settings page.
+	s.renderSettings(w, r, raw)
+}
+
+func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeleteAPIToken(r.Context(), userID(r.Context()), id); err != nil && err != store.ErrNotFound {
+		http.Error(w, "could not delete token", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
 // --- settings & Wallabag archiving (M3) ---
 
 func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
+	s.renderSettings(w, r, "")
+}
+
+// renderSettings draws the settings page; newToken, when non-empty, is shown
+// once as a freshly minted API token.
+func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, newToken string) {
+	uid := userID(r.Context())
 	data := map[string]any{}
-	if acct, err := s.store.WallabagAccount(r.Context(), userID(r.Context())); err == nil {
+	if acct, err := s.store.WallabagAccount(r.Context(), uid); err == nil {
 		// Echo everything except the password, which we never render back.
 		data["Wallabag"] = map[string]string{
 			"BaseURL": acct.BaseURL, "ClientID": acct.ClientID,
 			"ClientSecret": acct.ClientSecret, "Username": acct.Username,
 		}
+	}
+	if tokens, err := s.store.ListAPITokens(r.Context(), uid); err == nil {
+		data["Tokens"] = tokens
+	}
+	if newToken != "" {
+		data["NewToken"] = newToken
+		data["FeedURL"] = externalBase(r) + "/feed/due?token=" + newToken
 	}
 	s.renderPage(w, r, "settings", data)
 }
@@ -641,6 +791,19 @@ func toAPILink(l store.Link) apiLink {
 
 func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+}
+
+// externalBase reconstructs the externally-visible base URL (scheme://host),
+// honouring a reverse proxy's X-Forwarded-Proto.
+func externalBase(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		scheme = p
+	}
+	return scheme + "://" + r.Host
 }
 
 // backTo returns the Referer for same-page redirects, falling back to def.

@@ -8,11 +8,11 @@ Most bookmark managers are infinite, guilt-free backlogs. Tideline is the
 opposite: a triage funnel with a deliberate forcing function, so the links you
 save actually get used.
 
-> Status: **M3** — capture, an urgency-sorted inbox, automatic metadata
-> previews, TTL decay to the Flotsam, fast keyboard **triage**, a drag-and-drop
-> **Kanban board**, and **push-to-Wallabag** (the "keep & read" action, with
-> retry-safe failure handling) all work. The due-feed and the browser extension
-> are on the roadmap below.
+> Status: **M4** — capture, an urgency-sorted inbox, metadata previews, TTL
+> decay to the Flotsam, keyboard **triage**, a drag-and-drop **Kanban board**,
+> **push-to-Wallabag**, and **nudges** (scoped API tokens, an RSS feed of due
+> links, and a Firefox **browser extension** with a due-count badge) all work.
+> Remaining: multi-arch image publishing + a tagged release (M5).
 
 ## How it works
 
@@ -66,7 +66,9 @@ internal/store      SQLite repository + migrations
 internal/auth       password hashing (argon2id) + sessions
 internal/fetch      metadata fetcher + HTML parser
 internal/wallabag   Wallabag API client (OAuth2 + create entry)
+internal/feed       RSS rendering for the due-links feed
 internal/server     HTTP handlers, embedded templates & static assets
+extension/          Firefox WebExtension (save tab + due-count badge)
 ```
 
 Run the tests:
@@ -80,7 +82,7 @@ go test ./...
 - **M2** — quick keyboard triage (category + next-step) and a Kanban board ✅
 - **M3** — push-to-Wallabag (self-hosted *and* hosted `app.wallabag.it`) ✅
 - **M4** — scoped API tokens, an RSS feed of due items, and a browser extension
-  with a toolbar badge count
+  with a toolbar badge count ✅ (extension in [`extension/`](extension/))
 - **M5** — multi-arch image publishing and a tagged release
 
 ## License

@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tideline options</title>
+  <style>
+    body { font: 15px system-ui, sans-serif; background: #0f1720; color: #e6edf3; max-width: 460px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 18px; }
+    label { display: block; margin: 1rem 0 .25rem; color: #8aa0b3; font-size: 13px; }
+    input { width: 100%; padding: .55rem; border-radius: 6px; border: 1px solid #2d3d4f; background: #16212e; color: #e6edf3; box-sizing: border-box; }
+    button { margin-top: 1.25rem; padding: .6rem 1rem; border: none; border-radius: 8px; background: #2dd4bf; color: #04201c; font-weight: 600; cursor: pointer; }
+    .hint { color: #8aa0b3; font-size: 13px; }
+    .saved { color: #2dd4bf; margin-left: .6rem; }
+    code { color: #2dd4bf; }
+  </style>
+</head>
+<body>
+  <h1>🌊 Tideline</h1>
+  <p class="hint">Point the extension at your Tideline server and paste a
+    <strong>capture</strong>-scoped API token (create one under Settings → API tokens).</p>
+  <label for="serverUrl">Server URL</label>
+  <input id="serverUrl" type="url" placeholder="https://tideline.my-pi.local">
+  <label for="token">Capture token</label>
+  <input id="token" type="text" placeholder="paste your capture token">
+  <div>
+    <button id="save">Save</button>
+    <span class="saved" id="saved" hidden>Saved ✓</span>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>

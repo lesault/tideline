@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -361,6 +362,111 @@ func TestArchiveFailureKeepsLink(t *testing.T) {
 	got, _ := e.st.LinkByID(context.Background(), id)
 	if got.Status == store.StatusArchived {
 		t.Fatal("a failed push must not mark the link archived")
+	}
+}
+
+// dueLink inserts an inbox link already in the DueSoon window for user 1.
+func (e *testEnv) seedDueLink(t *testing.T, url string) {
+	t.Helper()
+	now := time.Now().UTC()
+	_, err := e.st.CreateLink(context.Background(), store.Link{
+		UserID: 1, URL: url, Domain: "example.com",
+		CreatedAt: now.Add(-13 * 24 * time.Hour), TTLExpiresAt: now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("seed due link: %v", err)
+	}
+}
+
+func TestCaptureViaCaptureToken(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "tok@example.com", "password1")
+	raw, _, _ := e.st.CreateAPIToken(context.Background(), 1, store.ScopeCapture, "ext")
+
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/api/links", strings.NewReader(`{"url":"https://example.com/from-ext"}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req) // no cookie jar — token only
+	if err != nil {
+		t.Fatalf("token capture: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	links, _ := e.st.ListInbox(context.Background(), 1)
+	if len(links) != 1 || links[0].URL != "https://example.com/from-ext" {
+		t.Fatalf("link not captured via token: %v", links)
+	}
+}
+
+func TestCaptureRejectedByFeedToken(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "f@example.com", "password1")
+	raw, _, _ := e.st.CreateAPIToken(context.Background(), 1, store.ScopeFeed, "reader")
+
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/api/links", strings.NewReader(`{"url":"https://example.com/x"}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("feed token capturing should be 403, got %d", resp.StatusCode)
+	}
+}
+
+func TestCountReportsDueItems(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "c@example.com", "password1")
+	e.captureID(t, "https://example.com/fresh") // fresh, not due
+	e.seedDueLink(t, "https://example.com/due") // due
+
+	resp, err := e.client.Get(e.srv.URL + "/api/count")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Count int `json:"count"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out.Count != 1 {
+		t.Fatalf("count = %d, want 1 (only the due link)", out.Count)
+	}
+}
+
+func TestDueFeedListsDueItems(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "feed@example.com", "password1")
+	e.seedDueLink(t, "https://example.com/due-article")
+	raw, _, _ := e.st.CreateAPIToken(context.Background(), 1, store.ScopeFeed, "reader")
+
+	resp, err := http.Get(e.srv.URL + "/feed/due?token=" + raw)
+	if err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "rss") {
+		t.Fatalf("content-type = %q, want rss", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "https://example.com/due-article") {
+		t.Fatalf("feed missing the due link:\n%s", body)
+	}
+}
+
+func TestDueFeedRequiresFeedScope(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "wrongscope@example.com", "password1")
+	raw, _, _ := e.st.CreateAPIToken(context.Background(), 1, store.ScopeCapture, "ext")
+
+	resp, err := http.Get(e.srv.URL + "/feed/due?token=" + raw)
+	if err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("capture token on feed should be 401, got %d", resp.StatusCode)
 	}
 }
 

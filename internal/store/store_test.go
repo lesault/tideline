@@ -228,6 +228,60 @@ func TestMoveCardAndListBoard(t *testing.T) {
 	}
 }
 
+func TestAPITokenCreateResolveListDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreateUser(ctx, "tok@example.com", "h")
+
+	plain, tok, err := s.CreateAPIToken(ctx, u.ID, "capture", "Firefox")
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	if plain == "" || tok.ID == 0 || tok.Scope != "capture" || tok.Label != "Firefox" {
+		t.Fatalf("unexpected token: plain=%q tok=%+v", plain, tok)
+	}
+
+	// The raw token resolves to its owner and scope.
+	got, err := s.APITokenByValue(ctx, plain)
+	if err != nil {
+		t.Fatalf("APITokenByValue: %v", err)
+	}
+	if got.UserID != u.ID || got.Scope != "capture" {
+		t.Fatalf("resolved token mismatch: %+v", got)
+	}
+
+	// A wrong value does not resolve.
+	if _, err := s.APITokenByValue(ctx, "not-a-real-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bogus token should be ErrNotFound, got %v", err)
+	}
+
+	// Listing never exposes the secret.
+	list, _ := s.ListAPITokens(ctx, u.ID)
+	if len(list) != 1 || list[0].Label != "Firefox" {
+		t.Fatalf("ListAPITokens = %+v", list)
+	}
+
+	// Deletion is scoped and revokes the token.
+	if err := s.DeleteAPIToken(ctx, u.ID, tok.ID); err != nil {
+		t.Fatalf("DeleteAPIToken: %v", err)
+	}
+	if _, err := s.APITokenByValue(ctx, plain); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted token should no longer resolve, got %v", err)
+	}
+}
+
+func TestAPITokenDeleteIsScopedPerUser(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	owner, _ := s.CreateUser(ctx, "o@example.com", "h")
+	other, _ := s.CreateUser(ctx, "x@example.com", "h")
+	_, tok, _ := s.CreateAPIToken(ctx, owner.ID, "feed", "reader")
+
+	if err := s.DeleteAPIToken(ctx, other.ID, tok.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleting another user's token should be ErrNotFound, got %v", err)
+	}
+}
+
 func TestWallabagAccountSaveLoadAndUpsert(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 260px; margin: 0; font: 14px system-ui, sans-serif; background: #16212e; color: #e6edf3; }
+    .wrap { padding: 14px; }
+    h1 { font-size: 15px; margin: 0 0 10px; }
+    button { width: 100%; padding: .6rem; border: none; border-radius: 8px; background: #2dd4bf; color: #04201c; font-weight: 600; cursor: pointer; }
+    .status { margin-top: 10px; font-size: 13px; min-height: 18px; }
+    .status.ok { color: #2dd4bf; }
+    .status.err { color: #ef4444; }
+    a { color: #8aa0b3; font-size: 12px; display: inline-block; margin-top: 12px; }
+    .config-needed { color: #eab308; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🌊 Tideline</h1>
+    <div id="ready" hidden>
+      <button id="add">Add this page</button>
+      <div class="status" id="status"></div>
+    </div>
+    <p id="needs-config" class="config-needed" hidden>Set your server URL and token in options first.</p>
+    <a href="#" id="opts">Options</a>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
