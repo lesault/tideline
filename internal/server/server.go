@@ -43,7 +43,12 @@ type Server struct {
 	loginLimiter     *rateLimiter
 	registerLimiter  *rateLimiter
 	openRegistration bool
+	enrichSem        chan struct{} // bounds concurrent metadata fetches
 }
+
+// maxConcurrentEnrich caps how many capture metadata fetches run at once, so a
+// burst of captures can't spawn unbounded goroutines/outbound requests.
+const maxConcurrentEnrich = 8
 
 // New constructs a Server. The metadata fetcher and Wallabag client may be nil
 // in tests that don't exercise enrichment or archiving.
@@ -58,6 +63,26 @@ func New(st *store.Store, sm *auth.SessionManager, f *fetch.Fetcher, wb *wallaba
 		loginLimiter:     newRateLimiter(20, time.Minute), // per-IP login attempts
 		registerLimiter:  newRateLimiter(10, time.Hour),   // per-IP new accounts
 		openRegistration: true,
+		enrichSem:        make(chan struct{}, maxConcurrentEnrich),
+	}
+}
+
+// scheduleEnrich kicks off metadata enrichment for a captured link if a worker
+// slot is free, returning whether it was scheduled. When at capacity it skips
+// (the link stays pending) rather than spawning an unbounded goroutine.
+func (s *Server) scheduleEnrich(id int64, rawURL, host string) bool {
+	if s.fetcher == nil {
+		return false
+	}
+	select {
+	case s.enrichSem <- struct{}{}:
+		go func() {
+			defer func() { <-s.enrichSem }()
+			s.enrich(id, rawURL, host)
+		}()
+		return true
+	default:
+		return false
 	}
 }
 
@@ -363,9 +388,7 @@ func (s *Server) capture(ctx context.Context, uid int64, rawURL string) (store.L
 	if err != nil {
 		return store.Link{}, err
 	}
-	if s.fetcher != nil {
-		go s.enrich(link.ID, rawURL, u.Host)
-	}
+	s.scheduleEnrich(link.ID, rawURL, u.Host)
 	return link, nil
 }
 

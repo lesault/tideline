@@ -159,6 +159,21 @@ func TestCaptureIsScopedPerUser(t *testing.T) {
 	}
 }
 
+func TestEnrichmentIsBounded(t *testing.T) {
+	e := newTestEnv(t)
+	e.app.enrichSem = make(chan struct{}, 1) // capacity 1 for the test
+
+	// Saturate the single slot — the next schedule must skip, not spawn.
+	e.app.enrichSem <- struct{}{}
+	if e.app.scheduleEnrich(1, e.upstream.URL, "x") {
+		t.Fatal("scheduleEnrich should skip when at capacity")
+	}
+	<-e.app.enrichSem // free the slot
+	if !e.app.scheduleEnrich(1, e.upstream.URL, "x") {
+		t.Fatal("scheduleEnrich should run when a slot is free")
+	}
+}
+
 func TestAssetsAreSelfHostedNotCDN(t *testing.T) {
 	e := newTestEnv(t)
 	// No page should pull executable/style assets from a third-party CDN.
